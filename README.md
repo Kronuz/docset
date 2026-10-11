@@ -55,6 +55,9 @@ docset is faster). Intel i9-9980HK, macOS, Apple clang `-O3`.
 | 0.1 | 1.03 | 0.89 | 0.87 | 0.72 | 0.15 |
 | 0.5 | 0.77 | 0.85 | 0.93 | 0.62 | 0.15 |
 
+On the Linux gate VM (Clang 18; the host shared with another VM), the worst rows are
+at density 0.01: OR 1.15 and ANDNOT 1.07–1.17; every other row is below 1.
+
 Reproduce with:
 
 ```sh

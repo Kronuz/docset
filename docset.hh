@@ -386,7 +386,7 @@ inline std::size_t intersect16_scalar(const std::uint16_t* a, std::size_t na, co
 
 #if DOCSET_SSE
 // 8×8 all-pairs compare per step: b rotated through its eight positions against a.
-__attribute__((target("ssse3"))) inline std::size_t intersect16_ssse3(
+__attribute__((target("ssse3,popcnt"))) inline std::size_t intersect16_ssse3(
 	const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 	std::size_t i = 0, j = 0, k = 0;
 	const __m128i zero = _mm_setzero_si128();
@@ -408,18 +408,23 @@ __attribute__((target("ssse3"))) inline std::size_t intersect16_ssse3(
 	}
 	return k + intersect16_scalar(a + i, na - i, b + j, nb - j, out + k);
 }
-// pcmpestrm answers "which lanes of a equal any lane of b" for 8×8 16-bit values in one instruction.
-__attribute__((target("sse4.2"))) inline unsigned equal_any16(__m128i va, __m128i vb) noexcept {
-	return unsigned(_mm_cvtsi128_si32(_mm_cmpestrm(vb, 8, va, 8, _SIDD_UWORD_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_BIT_MASK)));
+// "Which lanes of a equal any lane of b" for 8×8 16-bit values in one instruction.
+// pcmpistrm (3 µops) treats a zero lane as the end of the string; in strictly
+// increasing arrays a zero can only be an array's first element, so callers pass
+// may_have_zero only for blocks that start an array, and those use pcmpestrm.
+__attribute__((target("sse4.2,popcnt"))) inline unsigned equal_any16(__m128i va, __m128i vb, bool may_have_zero) noexcept {
+	constexpr int mode = _SIDD_UWORD_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_BIT_MASK;
+	if (may_have_zero) { return unsigned(_mm_cvtsi128_si32(_mm_cmpestrm(vb, 8, va, 8, mode))) & 0xff; }
+	return unsigned(_mm_cvtsi128_si32(_mm_cmpistrm(vb, va, mode))) & 0xff;
 }
 
-__attribute__((target("sse4.2"))) inline std::size_t intersect16_sse42(
+__attribute__((target("sse4.2,popcnt"))) inline std::size_t intersect16_sse42(
 	const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 	std::size_t i = 0, j = 0, k = 0;
 	while (i + 8 <= na && j + 8 <= nb) {
 		__m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
 		__m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + j));
-		unsigned mask = equal_any16(va, vb);
+		unsigned mask = equal_any16(va, vb, (a[i] == 0) | (b[j] == 0));
 		__m128i shuffle = _mm_loadu_si128(reinterpret_cast<const __m128i*>(compact16[mask].data()));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(out + k), _mm_shuffle_epi8(va, shuffle));
 		k += unsigned(std::popcount(mask));
@@ -471,8 +476,8 @@ inline std::size_t intersect16(const std::uint16_t* a, std::size_t na, const std
 		return k;
 	}
 #if DOCSET_SSE
-	static const bool sse42 = __builtin_cpu_supports("sse4.2");
-	static const bool ssse3 = __builtin_cpu_supports("ssse3");
+	static const bool sse42 = __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
+	static const bool ssse3 = __builtin_cpu_supports("ssse3") && __builtin_cpu_supports("popcnt");
 	if (sse42) { return intersect16_sse42(a, na, b, nb, out); }
 	if (ssse3) { return intersect16_ssse3(a, na, b, nb, out); }
 #elif DOCSET_NEON
@@ -510,7 +515,7 @@ inline std::size_t subtract16_scalar(const std::uint16_t* a, std::size_t na, con
 
 #if DOCSET_SSE
 // Sorts a bitonic 8-lane vector: half-cleaners at distances 4, 2, 1.
-__attribute__((target("sse4.1"))) inline __m128i bitonic_sort8(__m128i x) noexcept {
+__attribute__((target("sse4.1,popcnt"))) inline __m128i bitonic_sort8(__m128i x) noexcept {
 	__m128i y = _mm_shuffle_epi32(x, 0x4e);
 	x = _mm_blend_epi16(_mm_min_epu16(x, y), _mm_max_epu16(x, y), 0xf0);
 	y = _mm_shuffle_epi32(x, 0xb1);
@@ -521,7 +526,7 @@ __attribute__((target("sse4.1"))) inline __m128i bitonic_sort8(__m128i x) noexce
 
 // Vectorized merge (Inoue and Taura): merge two sorted 8-vectors, emit the lower 8 with
 // duplicates removed, and refill from the list whose head is smaller.
-__attribute__((target("sse4.1"))) inline std::size_t unite16_sse41(
+__attribute__((target("sse4.1,popcnt"))) inline std::size_t unite16_sse41(
 	const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 	if (na < 8 || nb < 8) { return unite16_scalar(a, na, b, nb, out); }
 	const __m128i reverse = _mm_setr_epi8(14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
@@ -578,10 +583,10 @@ __attribute__((target("sse4.1"))) inline std::size_t unite16_sse41(
 // Walks 8-lane blocks of a and b like the intersection (advance whichever block ends
 // first), accumulating which lanes of the current a block matched; an a block is emitted,
 // minus its matched lanes, when the walk moves past it.
-__attribute__((target("sse4.2"))) inline std::size_t subtract16_sse42(
+__attribute__((target("sse4.2,popcnt"))) inline std::size_t subtract16_sse42(
 	const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 	std::size_t i = 0, j = 0, k = 0;
-	auto emit = [&](__m128i va, unsigned matched) __attribute__((target("sse4.2"))) {
+	auto emit = [&](__m128i va, unsigned matched) __attribute__((target("sse4.2,popcnt"))) {
 		unsigned keep = ~matched & 0xff;
 		__m128i shuffle = _mm_loadu_si128(reinterpret_cast<const __m128i*>(compact16[keep].data()));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(out + k), _mm_shuffle_epi8(va, shuffle));
@@ -592,7 +597,7 @@ __attribute__((target("sse4.2"))) inline std::size_t subtract16_sse42(
 		__m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b));
 		unsigned matched = 0;
 		for (;;) {
-			matched |= equal_any16(va, vb);
+			matched |= equal_any16(va, vb, (a[i] == 0) | (b[j] == 0));
 			const std::uint16_t amax = a[i + 7], bmax = b[j + 7];
 			if (amax <= bmax) {
 				emit(va, matched);
@@ -606,7 +611,7 @@ __attribute__((target("sse4.2"))) inline std::size_t subtract16_sse42(
 				if (j + 8 > nb) {
 					// b has fewer than 8 left: finish the current a block against them one by one.
 					// a may have moved to its next block in this same step, so bound by the current block.
-					for (const std::uint16_t top = a[i + 7]; j < nb && b[j] <= top; ++j) { matched |= equal_any16(va, _mm_set1_epi16(short(b[j]))); }
+					for (const std::uint16_t top = a[i + 7]; j < nb && b[j] <= top; ++j) { matched |= equal_any16(va, _mm_set1_epi16(short(b[j])), true); }
 					emit(va, matched);
 					i += 8;
 					break;
@@ -639,7 +644,7 @@ inline std::size_t subtract16_neon(const std::uint16_t* a, std::size_t na, const
 // Union into out (room for na + nb + 8).
 inline std::size_t unite16(const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 #if DOCSET_SSE
-	static const bool sse41 = __builtin_cpu_supports("sse4.1");
+	static const bool sse41 = __builtin_cpu_supports("sse4.1") && __builtin_cpu_supports("popcnt");
 	if (sse41) { return unite16_sse41(a, na, b, nb, out); }
 #endif
 	return unite16_scalar(a, na, b, nb, out);
@@ -659,7 +664,7 @@ inline std::size_t subtract16(const std::uint16_t* a, std::size_t na, const std:
 		return k + (na - i);
 	}
 #if DOCSET_SSE
-	static const bool sse42 = __builtin_cpu_supports("sse4.2");
+	static const bool sse42 = __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
 	if (sse42) { return subtract16_sse42(a, na, b, nb, out); }
 #elif DOCSET_NEON
 	return subtract16_neon(a, na, b, nb, out);
