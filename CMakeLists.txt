@@ -28,8 +28,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(ROARING_BUILD_STATIC ON CACHE BOOL "" FORCE)
     FetchContent_Declare(croaring
       GIT_REPOSITORY https://github.com/RoaringBitmap/CRoaring.git
-      GIT_TAG        master
-      GIT_SHALLOW    TRUE)
+      GIT_TAG        f2b1a55bcfa49ec986539b05b603e26a3adcc95c)  # v5.2.3, the version the README numbers use
     FetchContent_MakeAvailable(croaring)
     target_link_libraries(docset_bench PRIVATE roaring)
     target_compile_definitions(docset_bench PRIVATE DOCSET_BENCH_REFERENCE=1)

@@ -89,6 +89,7 @@ int main() {
 				auto dense = a.to_bitset();
 				docset::sorted_set sparse(universe, va);
 				check_iterator(dense.begin_iteration(), va, rng);
+				CHECK(dense.begin_iteration().cost() == va.size());
 				check_iterator(sparse.begin_iteration(), va, rng);
 				check_advance([&] { return dense.begin_iteration(); }, va, universe, rng);
 				check_advance([&] { return sparse.begin_iteration(); }, va, universe, rng);

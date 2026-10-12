@@ -136,7 +136,11 @@ public:
 		doc_t doc() const noexcept { return doc_; }
 		doc_t next() noexcept { return seek(started_ ? (doc_ == no_more_docs ? doc_ : doc_ + 1) : 0); }
 		doc_t advance(doc_t target) noexcept { return seek(target); }
-		std::uint64_t cost() const noexcept { return s_->universe_; }
+		// Docs it yields: the cardinality, counted once on first use.
+		std::uint64_t cost() const noexcept {
+			if (cost_ == ~std::uint64_t(0)) { cost_ = s_->count(); }
+			return cost_;
+		}
 
 	private:
 		doc_t seek(doc_t from) noexcept {
@@ -152,6 +156,7 @@ public:
 		}
 		const bitset* s_;
 		doc_t doc_ = no_more_docs;
+		mutable std::uint64_t cost_ = ~std::uint64_t(0);
 		bool started_ = false;
 	};
 	iterator begin_iteration() const noexcept { return iterator(*this); }
