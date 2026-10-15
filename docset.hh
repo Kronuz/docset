@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <optional>
 #include <bit>
 #include <concepts>
 #include <cstddef>
@@ -1018,6 +1019,152 @@ private:
 	std::vector<detail::container> containers_;
 	std::uint64_t count_ = 0;
 	doc_t universe_ = 0;
+};
+
+// ---------------------------------------------------------------------------------------------
+// Frozen sets: an on-disk form with rank, for sparse presence columns. Little-endian:
+//   "DSF1", u32 chunks, u64 cardinality,
+//   per chunk: u16 key, u8 kind, u8 0, u32 count, u64 rank (present docs in earlier chunks),
+//     u64 offset (from the end of the directory);
+//   payloads: full (none), array (count u16 lows, increasing), or bitset (1,024 u64 words,
+//     then 128 u16 counts of the chunk's bits before each 512-bit block).
+// rank(doc) is the number of present docs below doc, so a present doc's rank is its index
+// among them.
+
+namespace frozen_detail {
+using detail::array_max, detail::bitmap_words, detail::chunk_bits;
+enum kind : std::uint8_t { full = 0, array = 1, bits = 2 };
+inline constexpr std::size_t header_bytes = 16, entry_bytes = 24, rank_every = 512;
+inline constexpr std::size_t bitset_bytes = 8 * bitmap_words + 2 * (chunk_bits / rank_every);
+template <typename T> inline T load(const std::uint8_t* p) noexcept { T v; std::memcpy(&v, p, sizeof v); return v; }
+template <typename T> inline void store(std::vector<std::uint8_t>& out, T v) {
+	std::uint8_t b[sizeof v]; std::memcpy(b, &v, sizeof v); out.insert(out.end(), b, b + sizeof v);
+}
+}  // namespace frozen_detail
+
+// Freezes a strictly increasing sequence of docs.
+inline std::vector<std::uint8_t> freeze(const doc_t* docs, std::size_t n) {
+	using namespace frozen_detail;
+	std::vector<std::uint8_t> directory, payload;
+	std::uint32_t chunks = 0; std::uint64_t rank = 0;
+	for (std::size_t i = 0; i < n;) {
+		const std::uint16_t key = std::uint16_t(docs[i] >> 16);
+		std::size_t j = i;
+		while (j < n && (docs[j] >> 16) == key) { ++j; }
+		const std::uint32_t count = std::uint32_t(j - i);
+		const std::uint8_t k = count == chunk_bits ? full : count <= array_max ? array : bits;
+		store<std::uint16_t>(directory, key); directory.push_back(k); directory.push_back(0);
+		store<std::uint32_t>(directory, count); store<std::uint64_t>(directory, rank); store<std::uint64_t>(directory, payload.size());
+		if (k == array) {
+			for (std::size_t x = i; x < j; ++x) { store<std::uint16_t>(payload, std::uint16_t(docs[x])); }
+		} else if (k == bits) {
+			std::array<std::uint64_t, bitmap_words> words{};
+			for (std::size_t x = i; x < j; ++x) { words[(docs[x] & 0xffff) >> 6] |= 1ull << (docs[x] & 63); }
+			for (auto w : words) { store<std::uint64_t>(payload, w); }
+			std::uint16_t before = 0;
+			for (std::size_t b = 0; b < chunk_bits / rank_every; ++b) {
+				store<std::uint16_t>(payload, before);
+				for (std::size_t w = b * 8; w < b * 8 + 8; ++w) { before = std::uint16_t(before + std::popcount(words[w])); }
+			}
+		}
+		rank += count; ++chunks; i = j;
+	}
+	std::vector<std::uint8_t> out{'D', 'S', 'F', '1'};
+	store<std::uint32_t>(out, chunks); store<std::uint64_t>(out, rank);
+	out.insert(out.end(), directory.begin(), directory.end());
+	out.insert(out.end(), payload.begin(), payload.end());
+	return out;
+}
+
+class frozen_view {
+public:
+	// Validates every byte; a malformed form opens as nothing.
+	static std::optional<frozen_view> open(const std::uint8_t* data, std::size_t size) noexcept {
+		using namespace frozen_detail;
+		if (size < header_bytes || std::memcmp(data, "DSF1", 4) != 0) { return std::nullopt; }
+		frozen_view v;
+		v.chunks_ = load<std::uint32_t>(data + 4); v.cardinality_ = load<std::uint64_t>(data + 8);
+		if (v.chunks_ > (std::size_t(1) << 16) || size - header_bytes < std::size_t(v.chunks_) * entry_bytes) { return std::nullopt; }
+		v.directory_ = data + header_bytes; v.payload_ = v.directory_ + std::size_t(v.chunks_) * entry_bytes;
+		v.payload_size_ = size - header_bytes - std::size_t(v.chunks_) * entry_bytes;
+		std::uint64_t rank = 0, expected_offset = 0; int previous = -1;
+		for (std::uint32_t c = 0; c < v.chunks_; ++c) {
+			const auto e = v.entry(c);
+			if (int(e.key) <= previous || e.pad || e.rank != rank || e.offset != expected_offset || !e.count || e.count > chunk_bits) { return std::nullopt; }
+			previous = e.key;
+			if (e.kind == full) {
+				if (e.count != chunk_bits) { return std::nullopt; }
+			} else if (e.kind == array) {
+				if (e.count > array_max || v.payload_size_ - e.offset < 2 * std::size_t(e.count) || e.offset > v.payload_size_) { return std::nullopt; }
+				for (std::uint32_t x = 1; x < e.count; ++x) {
+					if (load<std::uint16_t>(v.payload_ + e.offset + 2 * x) <= load<std::uint16_t>(v.payload_ + e.offset + 2 * (x - 1))) { return std::nullopt; }
+				}
+				expected_offset += 2 * std::size_t(e.count);
+			} else if (e.kind == bits) {
+				if (e.count <= array_max || e.count == chunk_bits || e.offset > v.payload_size_ || v.payload_size_ - e.offset < bitset_bytes) { return std::nullopt; }
+				std::uint32_t before = 0;
+				for (std::size_t b = 0; b < chunk_bits / rank_every; ++b) {
+					if (load<std::uint16_t>(v.payload_ + e.offset + 8 * bitmap_words + 2 * b) != before) { return std::nullopt; }
+					for (std::size_t w = b * 8; w < b * 8 + 8; ++w) { before += unsigned(std::popcount(load<std::uint64_t>(v.payload_ + e.offset + 8 * w))); }
+				}
+				if (before != e.count) { return std::nullopt; }
+				expected_offset += bitset_bytes;
+			} else {
+				return std::nullopt;
+			}
+			rank += e.count;
+		}
+		if (rank != v.cardinality_ || expected_offset != v.payload_size_) { return std::nullopt; }
+		return v;
+	}
+	std::uint64_t cardinality() const noexcept { return cardinality_; }
+	bool contains(doc_t doc) const noexcept {
+		const auto c = find(std::uint16_t(doc >> 16));
+		if (c == chunks_ || entry(c).key != (doc >> 16)) { return false; }
+		return inner_rank(entry(c), std::uint16_t(doc), true) != 0;
+	}
+	// Present docs below `doc`.
+	std::uint64_t rank(doc_t doc) const noexcept {
+		const auto c = find(std::uint16_t(doc >> 16));
+		if (c == chunks_) { return cardinality_; }
+		const auto e = entry(c);
+		return e.key != (doc >> 16) ? e.rank : e.rank + inner_rank(e, std::uint16_t(doc), false);
+	}
+private:
+	struct entry_t { std::uint16_t key; std::uint8_t kind, pad; std::uint32_t count; std::uint64_t rank, offset; };
+	entry_t entry(std::uint32_t c) const noexcept {
+		using frozen_detail::load;
+		const auto* p = directory_ + std::size_t(c) * frozen_detail::entry_bytes;
+		return {load<std::uint16_t>(p), p[2], p[3], load<std::uint32_t>(p + 4), load<std::uint64_t>(p + 8), load<std::uint64_t>(p + 16)};
+	}
+	// The first chunk whose key is at least `key`.
+	std::uint32_t find(std::uint16_t key) const noexcept {
+		std::uint32_t lo = 0, hi = chunks_;
+		while (lo < hi) { const auto mid = lo + (hi - lo) / 2; if (entry(mid).key < key) { lo = mid + 1; } else { hi = mid; } }
+		return lo;
+	}
+	// Present lows below `low` in the chunk, or with `membership`, 1 if `low` is present.
+	std::uint32_t inner_rank(const entry_t& e, std::uint16_t low, bool membership) const noexcept {
+		using namespace frozen_detail;
+		const auto* p = payload_ + e.offset;
+		if (e.kind == full) { return membership ? 1 : low; }
+		if (e.kind == array) {
+			std::uint32_t lo = 0, hi = e.count;
+			while (lo < hi) { const auto mid = lo + (hi - lo) / 2; if (load<std::uint16_t>(p + 2 * mid) < low) { lo = mid + 1; } else { hi = mid; } }
+			return membership ? (lo < e.count && load<std::uint16_t>(p + 2 * lo) == low) : lo;
+		}
+		const std::size_t word = low >> 6;
+		const auto bits_word = load<std::uint64_t>(p + 8 * word);
+		if (membership) { return (bits_word >> (low & 63)) & 1; }
+		std::uint32_t r = load<std::uint16_t>(p + 8 * bitmap_words + 2 * (low / rank_every));
+		for (std::size_t w = (low / rank_every) * 8; w < word; ++w) { r += unsigned(std::popcount(load<std::uint64_t>(p + 8 * w))); }
+		return r + unsigned(std::popcount(bits_word & ((1ull << (low & 63)) - 1)));
+	}
+	const std::uint8_t* directory_ = nullptr;
+	const std::uint8_t* payload_ = nullptr;
+	std::size_t payload_size_ = 0;
+	std::uint32_t chunks_ = 0;
+	std::uint64_t cardinality_ = 0;
 };
 
 }  // namespace docset

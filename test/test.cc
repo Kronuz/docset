@@ -2,6 +2,7 @@
 // representations, iterators (next and advance), and the representation choice.
 #include "docset.hh"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -62,6 +63,47 @@ static void check_advance(Make make, const std::vector<doc_t>& expected, doc_t u
 }
 
 int main() {
+	// Frozen sets: rank and membership against brute force at every density, chunk kinds
+	// (array, bitset, full) side by side, and every single-byte corruption either refused
+	// at open or harmless.
+	{
+		std::mt19937_64 rng(7);
+		for (int round = 0; round < 60; ++round) {
+			std::vector<docset::doc_t> docs;
+			const int chunks = 1 + int(rng() % 5);
+			for (int c = 0; c < chunks; ++c) {
+				const docset::doc_t base = docset::doc_t((rng() % 4 + c * 5) << 16);
+				const int mode = int(rng() % 4);
+				for (docset::doc_t low = 0; low < 65536; ++low) {
+					bool take = mode == 0 ? rng() % 1000 == 0 : mode == 1 ? rng() % 3 != 0 : mode == 2 ? true : rng() % 16 == 0;
+					if (take) { docs.push_back(base + low); }
+				}
+			}
+			std::sort(docs.begin(), docs.end()); docs.erase(std::unique(docs.begin(), docs.end()), docs.end());
+			auto bytes = docset::freeze(docs.data(), docs.size());
+			auto view = docset::frozen_view::open(bytes.data(), bytes.size());
+			CHECK(view && view->cardinality() == docs.size());
+			if (!view) { continue; }
+			for (int probe = 0; probe < 2000; ++probe) {
+				const docset::doc_t doc = probe % 2 && !docs.empty() ? docs[rng() % docs.size()] + docset::doc_t(rng() % 3) - 1 : docset::doc_t(rng() % (26u << 16));
+				const auto below = std::uint64_t(std::lower_bound(docs.begin(), docs.end(), doc) - docs.begin());
+				CHECK(view->rank(doc) == below);
+				CHECK(view->contains(doc) == std::binary_search(docs.begin(), docs.end(), doc));
+			}
+			for (std::size_t k = 0; k < docs.size(); k += 1 + docs.size() / 64) { CHECK(view->rank(docs[k]) == k && view->contains(docs[k])); }
+			if (round % 6 == 0) {
+				for (std::size_t at = 0; at < bytes.size(); at += 1 + rng() % 97) {
+					auto bad = bytes; bad[at] ^= std::uint8_t(1 + rng() % 255);
+					if (auto v = docset::frozen_view::open(bad.data(), bad.size())) { (void)v->rank(docset::doc_t(rng())); (void)v->contains(docset::doc_t(rng())); }
+				}
+				CHECK(!docset::frozen_view::open(bytes.data(), bytes.size() - 1));
+			}
+		}
+		auto empty = docset::freeze(nullptr, 0);
+		auto view = docset::frozen_view::open(empty.data(), empty.size());
+		CHECK(view && view->cardinality() == 0 && view->rank(123) == 0 && !view->contains(0));
+	}
+
 	std::mt19937_64 rng(20261011);
 	for (doc_t universe : {1u, 63u, 64u, 65u, 1000u, 65536u, 65537u, 100003u, 300007u}) {
 		for (double da : {0.0, 1e-4, 1e-2, 0.03, 0.1, 0.5, 1.0}) {
