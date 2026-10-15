@@ -1,5 +1,7 @@
 # docset
 
+[![CI](https://github.com/Kronuz/docset/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/docset/actions/workflows/ci.yml)
+
 Sets of document ordinals for C++20: a dense bitset, a sorted array, and a chunked
 set that keeps each region of the id space in its cheaper form. Header-only, no
 dependencies. It also defines `doc_iterator`, the iteration contract a search
