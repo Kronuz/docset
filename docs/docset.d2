@@ -1,0 +1,14 @@
+# docset: each 65,536-id chunk keeps the cheaper of two forms.
+# Render: d2 --layout elk --sketch --theme 302 docs/docset.d2 docs/docset.svg
+direction: right
+ids: "doc ids 0 … 2³²" {shape: rectangle}
+c0: "chunk 0\nsparse → sorted array" {shape: rectangle}
+c1: "chunk 1\ndense → bitmap" {shape: rectangle}
+c2: "chunk n\n…" {shape: rectangle}
+ids -> c0
+ids -> c1
+ids -> c2
+it: "doc_iterator\nnext() · advance(target)" {shape: hexagon}
+c0 -> it
+c1 -> it
+c2 -> it

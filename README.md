@@ -1,13 +1,18 @@
 # docset
 
 [![CI](https://github.com/Kronuz/docset/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/docset/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
+![Header-only](https://img.shields.io/badge/header--only-yes-green.svg)
 
 Sets of document ordinals for C++20: a dense bitset, a sorted array, and a chunked
 set that keeps each region of the id space in its cheaper form. Header-only, no
 dependencies. It also defines `doc_iterator`, the iteration contract a search
 engine's posting lists, scorers, and filters share.
 
-## What it is
+![docset: one id space split into chunks, each stored as a bitmap or a sorted array](docs/docset.svg)
+
+## ✨ Highlights
 
 One header, `docset.hh`:
 
@@ -21,7 +26,23 @@ One header, `docset.hh`:
 - `doc_iterator`: `doc()`, `next()`, `advance(target)`, `cost()`, ending at
   `docset::no_more_docs`. All three set types provide one.
 
-## Usage
+## 📦 Installation
+
+Requires a C++20 compiler; CMake 3.14 or newer for the CMake route. CI builds it on
+Linux (x86_64, arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan, and TSan
+builds.
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(docset
+  GIT_REPOSITORY https://github.com/Kronuz/docset.git
+  GIT_TAG        main)
+FetchContent_MakeAvailable(docset)
+
+target_link_libraries(my_app PRIVATE docset::docset)
+```
+
+## 🚀 Quick start
 
 ```cpp
 #include "docset.hh"
@@ -40,7 +61,7 @@ for (auto d = it.advance(60000); d != docset::no_more_docs; d = it.next()) {
 }
 ```
 
-## Performance
+## ⚡ Performance
 
 `docset::set` against CRoaring on the same members: two random sets per density
 over 2^24 ordinals, each operation producing a new set. Trials alternate between
@@ -70,7 +91,7 @@ cmake --build build && build/docset_bench
 `DOCSET_BENCH_REFERENCE` fetches CRoaring for the benchmark only; the library never
 links it.
 
-## Build and test
+## 🛠️ Building and testing
 
 ```sh
 cmake -S . -B build && cmake --build build && ctest --test-dir build
@@ -82,12 +103,27 @@ interleaved `next()` and `advance()`; and drive the 16-bit SIMD kernels directly
 with heavy overlap at every small size. `docset_portable_test` builds with
 `DOCSET_NO_SIMD`.
 
-## Limits
+## 🎯 When to use it
+
+- ✅ Posting lists, filters, and deleted-document sets over 32-bit ids.
+- ❌ Long runs of consecutive ids: there are no run-length containers yet.
+
+### Limits
 
 - No run-length containers: long consecutive ranges cost a bitmap per chunk.
 - The SIMD union is x86-only (SSE4.1); AArch64 uses NEON for intersection and
   difference and the scalar merge for union.
 
-## License
+## 📚 Documentation
 
-MIT. See [LICENSE](LICENSE).
+- [ARCHITECTURE.md](ARCHITECTURE.md): the design and the format.
+- [AGENTS.md](AGENTS.md): repository map and invariants.
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) first. CI must
+pass on every platform.
+
+## 📄 License
+
+MIT, Copyright (c) 2026 Germán Méndez Bravo. See [LICENSE](LICENSE).
