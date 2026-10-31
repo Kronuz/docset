@@ -65,33 +65,37 @@ for (auto d = it.advance(60000); d != docset::no_more_docs; d = it.next()) {
 
 ## ⚡ Performance
 
-`docset::set` against CRoaring on the same members: two random sets per density
-over 2^24 ordinals, each operation producing a new set. Trials alternate between
-the two libraries, and the ratio is the median of per-trial ratios (below 1 means
-docset is faster). Intel i9-9980HK, macOS, Apple clang `-O3`, measured 2026-10-22 at
-`cd38597`.
+`docset::set` against CRoaring 5.4.0 (`db0d1e9`) on the same members: two random sets
+per density over 2^24 ordinals, each operation producing a new set. Trials alternate
+between the two libraries, and the ratio is the median of per-trial ratios (below 1
+means docset is faster). Apple M4 Pro, Apple clang 17 with `-O3 -DNDEBUG -std=gnu++20`
+(CRoaring with `-O3 -DNDEBUG`), measured under `quiet strict` at `2bc55cc`. Each cell
+is the mean of two runs, which agree within 0.04.
 
 | Density | AND | OR | ANDNOT | Iterate | Count |
 |---:|---:|---:|---:|---:|---:|
-| 1e-6 | 0.72 | 0.61 | 0.64 | 0.55 | 0.71 |
-| 1e-5 | 0.20 | 0.63 | 0.66 | 0.30 | 0.26 |
-| 1e-4 | 0.29 | 0.77 | 0.77 | 0.22 | 0.15 |
-| 1e-3 | 0.62 | 0.96 | 0.92 | 0.18 | 0.15 |
-| 1e-2 | 0.98 | 1.08 | 1.14 | 0.18 | 0.15 |
-| 0.1 | 1.03 | 0.89 | 0.87 | 0.72 | 0.15 |
-| 0.5 | 0.77 | 0.85 | 0.93 | 0.62 | 0.15 |
+| 1e-6 | 0.61 | 0.65 | 0.71 | 0.57 | 0.81 |
+| 1e-5 | 0.25 | 0.73 | 0.76 | 0.41 | 0.24 |
+| 1e-4 | 0.27 | 0.72 | 0.66 | 0.59 | 0.12 |
+| 1e-3 | 0.29 | 1.07 | 0.23 | 0.19 | 0.12 |
+| 1e-2 | 0.29 | 0.98 | 0.38 | 0.09 | 0.12 |
+| 0.1 | 0.52 | 0.71 | 0.70 | 0.86 | 0.13 |
+| 0.5 | 0.66 | 0.72 | 0.71 | 0.82 | 0.12 |
 
-On the Linux gate VM (Clang 18; the host shared with another VM), the worst rows are
-at density 0.01: OR 1.15 and ANDNOT 1.07–1.17; every other row is below 1.
+docset is faster in every cell but OR at density 1e-3, where CRoaring is faster (1.07);
+OR at density 1e-2 is level (0.98).
 
 Reproduce with:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDOCSET_BENCH_REFERENCE=ON
+git clone https://github.com/RoaringBitmap/CRoaring
+git -C CRoaring checkout db0d1e9ae84041b64fa068891db5ca5f80773e1b
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDOCSET_BENCH_REFERENCE=ON \
+  -DFETCHCONTENT_SOURCE_DIR_CROARING="$PWD/CRoaring"
 cmake --build build && build/docset_bench
 ```
 
-`DOCSET_BENCH_REFERENCE` fetches CRoaring for the benchmark only; the library never
+`DOCSET_BENCH_REFERENCE` builds CRoaring for the benchmark only; the library never
 links it.
 
 ## 🛠️ Building and testing
