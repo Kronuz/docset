@@ -40,6 +40,14 @@ Set operations walk both key lists and combine matching containers:
   the current block of `a` matched, emitting the unmatched lanes when the walk moves
   past the block.
 
+## Point tests and conversion
+
+`set::test(d)` finds the chunk key, then the low half in an array container, each with
+a branchless lower bound: the comparison feeds a conditional select instead of a jump,
+which suits the small, unpredictable searches here. A bitmap result at or below 4096
+members converts to an array by extracting two bits per word without a branch, with a
+rare third bit handled by a loop.
+
 ## Iterators
 
 `advance(target)` skips whole chunks by key, then scans a bitmap word by word or

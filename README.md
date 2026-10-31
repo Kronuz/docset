@@ -68,7 +68,8 @@ for (auto d = it.advance(60000); d != docset::no_more_docs; d = it.next()) {
 `docset::set` against CRoaring on the same members: two random sets per density
 over 2^24 ordinals, each operation producing a new set. Trials alternate between
 the two libraries, and the ratio is the median of per-trial ratios (below 1 means
-docset is faster). Intel i9-9980HK, macOS, Apple clang `-O3`.
+docset is faster). Intel i9-9980HK, macOS, Apple clang `-O3`, measured 2026-10-22 at
+`cd38597`.
 
 | Density | AND | OR | ANDNOT | Iterate | Count |
 |---:|---:|---:|---:|---:|---:|
@@ -93,23 +94,19 @@ cmake --build build && build/docset_bench
 `DOCSET_BENCH_REFERENCE` fetches CRoaring for the benchmark only; the library never
 links it.
 
-Two internal fast paths, results unchanged (`test/diff.cc` compares against the frozen
-original `test/docset_old.hh`; `build/docset_cmp_bench` times old against new, arm64):
-point `test()` uses a branchless lower bound over the keys and the array (1.6-2.1x at
-densities 0.01-0.5), and a bitmap AND/ANDNOT whose result is small extracts two bits per
-word without a data-dependent branch (bitmap AND at density 0.1: 830 -> 253 us, 3.3x).
-
 ## 🛠️ Building and testing
 
 ```sh
 cmake -S . -B build && cmake --build build && ctest --test-dir build
+build/docset_cmp_bench   # AND, ANDNOT, and test() against the reference test/docset_old.hh
 ```
 
 The tests compare every operation with `std::set_*` across densities, universes
 that cross chunk boundaries, and mixed array/bitmap chunks; check iterators with
 interleaved `next()` and `advance()`; and drive the 16-bit SIMD kernels directly
 with heavy overlap at every small size. `docset_portable_test` builds with
-`DOCSET_NO_SIMD`.
+`DOCSET_NO_SIMD`. `test/diff.cc` checks every operation against the reference
+implementation in `test/docset_old.hh`.
 
 ## 🎯 When to use it
 
@@ -125,6 +122,7 @@ with heavy overlap at every small size. `docset_portable_test` builds with
 ## 📚 Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): the design and the format.
+- [CHANGELOG.md](CHANGELOG.md): changes by date.
 - [AGENTS.md](AGENTS.md): repository map and invariants.
 
 ## 🤝 Contributing

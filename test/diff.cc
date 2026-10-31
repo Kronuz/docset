@@ -1,4 +1,4 @@
-// Differential test against test/docset_old.hh, a frozen copy of the original implementation:
+// Differential test against the reference implementation in test/docset_old.hh:
 // and / or / andnot / test / count / iteration must agree on random sets across densities,
 // including chunks that straddle the array/bitmap threshold and empty chunks.
 #include "docset.hh"

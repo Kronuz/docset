@@ -770,10 +770,8 @@ struct container {
 		if (card > array_max) {
 			c.bitmap = std::move(words);
 		} else {
-			// Sparse words hold about one bit, so a per-word `while (w)` loop mispredicts on its
-			// trip count. Two bits per word are extracted branch-free (the output index advances
-			// only if a bit was there) and a rare third falls into the loop. The output is
-			// padded so the unconditional writes stay in bounds.
+			// Sparse words hold about one bit: extract two per word branch-free (the index advances
+			// only on a set bit), loop for a rare third. Padding keeps the blind writes in bounds.
 			c.array.resize(std::size_t(card) + 2);
 			std::uint16_t* out = c.array.data();
 			std::size_t k = 0;

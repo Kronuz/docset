@@ -24,7 +24,7 @@
 // array, and `docset`, which picks between them by density. Plus the iterator
 // concept every posting list, scorer, and filter in a search engine implements.
 
-// Frozen copy of the pre-optimization docset.hh: the oracle for test/diff.cc.
+// Reference docset.hh (std::lower_bound test(), per-word bit loop): the oracle for test/diff.cc.
 #pragma once
 
 #include <algorithm>

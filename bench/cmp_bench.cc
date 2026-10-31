@@ -1,5 +1,5 @@
-// New docset.hh against the frozen test/docset_old.hh: materialized AND / ANDNOT per density and
-// point test() probes, with an A/A column (old against old) for the noise floor.
+// docset.hh against the reference test/docset_old.hh: materialized AND / ANDNOT per density and
+// point test() probes, with an A/A column (reference against itself) for the noise floor.
 #include "docset.hh"
 #include "docset_old.hh"
 
