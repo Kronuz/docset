@@ -684,6 +684,21 @@ inline constexpr std::size_t chunk_bits = 1u << 16;
 inline constexpr std::size_t bitmap_words = chunk_bits / 64;
 inline constexpr std::uint32_t array_max = 4096;  // 4096 × 2 bytes = one 8 KiB bitmap
 
+// Index of the first element >= x among n ascending values, without a data-dependent
+// branch (the compiler emits a conditional select), which beats std::lower_bound on the
+// small arrays here because the comparisons are unpredictable.
+template <typename T>
+inline std::size_t lower_bound_index(const T* a, std::size_t n, T x) noexcept {
+	if (!n) { return 0; }
+	const T* base = a;
+	for (std::size_t len = n; len > 1;) {
+		const std::size_t half = len / 2;
+		base = base[half] < x ? base + half : base;
+		len -= half;
+	}
+	return std::size_t(base - a) + (*base < x);
+}
+
 template <typename Op>
 inline std::uint32_t combine_words_generic(const std::uint64_t* x, const std::uint64_t* y, std::uint64_t* z, Op op) noexcept {
 	std::uint32_t n = 0;
@@ -726,7 +741,8 @@ struct container {
 
 	bool test(std::uint16_t low) const noexcept {
 		if (is_bitmap()) { return (bitmap[low >> 6] >> (low & 63)) & 1; }
-		return std::binary_search(array.begin(), array.end(), low);
+		const std::size_t i = lower_bound_index(array.data(), array.size(), low);
+		return i < array.size() && array[i] == low;
 	}
 
 	template <typename F>
@@ -754,11 +770,25 @@ struct container {
 		if (card > array_max) {
 			c.bitmap = std::move(words);
 		} else {
-			c.array.resize(card);
+			// Sparse words hold about one bit, so a per-word `while (w)` loop mispredicts on its
+			// trip count. Two bits per word are extracted branch-free (the output index advances
+			// only if a bit was there) and a rare third falls into the loop. The output is
+			// padded so the unconditional writes stay in bounds.
+			c.array.resize(std::size_t(card) + 2);
+			std::uint16_t* out = c.array.data();
 			std::size_t k = 0;
 			for (std::size_t i = 0; i < bitmap_words; ++i) {
-				for (std::uint64_t w = words[i]; w; w &= w - 1) { c.array[k++] = std::uint16_t(i * 64 + unsigned(std::countr_zero(w))); }
+				std::uint64_t w = words[i];
+				const std::uint16_t base = std::uint16_t(i * 64);
+				out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
+				k += w != 0;
+				w &= w - 1;
+				out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
+				k += w != 0;
+				w &= w - 1;
+				for (; w; w &= w - 1) { out[k++] = std::uint16_t(base + unsigned(std::countr_zero(w))); }
 			}
+			c.array.resize(card);
 		}
 		return c;
 	}
@@ -890,8 +920,8 @@ public:
 	std::size_t chunks() const noexcept { return keys_.size(); }
 
 	bool test(doc_t d) const noexcept {
-		auto it = std::lower_bound(keys_.begin(), keys_.end(), std::uint16_t(d >> 16));
-		return it != keys_.end() && *it == (d >> 16) && containers_[std::size_t(it - keys_.begin())].test(std::uint16_t(d));
+		const std::size_t i = detail::lower_bound_index(keys_.data(), keys_.size(), std::uint16_t(d >> 16));
+		return i < keys_.size() && keys_[i] == (d >> 16) && containers_[i].test(std::uint16_t(d));
 	}
 
 	template <typename F>

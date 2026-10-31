@@ -93,6 +93,12 @@ cmake --build build && build/docset_bench
 `DOCSET_BENCH_REFERENCE` fetches CRoaring for the benchmark only; the library never
 links it.
 
+Two internal fast paths, results unchanged (`test/diff.cc` compares against the frozen
+original `test/docset_old.hh`; `build/docset_cmp_bench` times old against new, arm64):
+point `test()` uses a branchless lower bound over the keys and the array (1.6-2.1x at
+densities 0.01-0.5), and a bitmap AND/ANDNOT whose result is small extracts two bits per
+word without a data-dependent branch (bitmap AND at density 0.1: 830 -> 253 us, 3.3x).
+
 ## 🛠️ Building and testing
 
 ```sh

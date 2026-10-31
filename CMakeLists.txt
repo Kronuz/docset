@@ -18,6 +18,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_compile_definitions(docset_portable_test PRIVATE DOCSET_NO_SIMD)
   add_test(NAME docset_portable COMMAND docset_portable_test)
 
+  add_executable(docset_diff test/diff.cc)
+  target_link_libraries(docset_diff PRIVATE docset)
+  target_include_directories(docset_diff PRIVATE test)
+  add_test(NAME docset_diff COMMAND docset_diff)
+  add_executable(docset_cmp_bench bench/cmp_bench.cc)
+  target_link_libraries(docset_cmp_bench PRIVATE docset)
+  target_include_directories(docset_cmp_bench PRIVATE test)
+
   option(DOCSET_BENCH_REFERENCE "Fetch CRoaring as a benchmark-only reference" OFF)
   # libFuzzer target (Clang): cmake -DDOCSET_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
   option(DOCSET_FUZZ "Build the libFuzzer target" OFF)
