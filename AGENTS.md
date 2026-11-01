@@ -8,6 +8,9 @@ test/test.cc     Operations vs std::set_*, iterators, 16-bit kernels. Built twic
 test/diff.cc     Every operation against the reference test/docset_old.hh.
 bench/bench.cc   Interleaved comparison against CRoaring (DOCSET_BENCH_REFERENCE).
 bench/cmp_bench.cc  AND, ANDNOT, and test() timings against test/docset_old.hh, with an A/A column.
+bench/ab_bench.cc   The same rows with one docset version per binary (docset_ab_new, docset_ab_old).
+bench/ab_compare.py Alternates two ab_bench binaries and prints old/new per row with an A/A column.
+test/codegen_probe.cc, test/check_codegen.cmake  docset_codegen: lower_bound_index must compile to a conditional move.
 docs/docset.d2     README diagram; render: d2 --layout elk --sketch --theme 302 docs/docset.d2 docs/docset.svg
 ```
 
@@ -20,6 +23,13 @@ docs/docset.d2     README diagram; render: d2 --layout elk --sketch --theme 302 
   position, so `container::fill_array` sizes the array to card + 2 before it runs. x86 uses
   BMI1 behind a run-time check; without it the loop is faster than the branch-free form.
 - Never pass an empty vector's `data()` to `memcpy`; use `detail::copy_bytes`.
+- `lower_bound_index` marks its select unpredictable (`DOCSET_UNPREDICTABLE`): LLVM compiles a select on a loaded
+  value to a branch on x86-64 otherwise. `docset_codegen` checks the assembly.
+- The vector union finishes through `unite16_finish`, whose scratch is 16 stack elements: the caller passes the
+  unread rest with fewer than 8 values as `few`.
+- Benchmarks cycle each timed operation through several inputs. One repeated input lets the branch predictor
+  memorize the outcomes of the data-dependent branches, and the row then measures predictor aliasing, which moves
+  with code layout, not the kernel.
 
 ## Verify a change
 

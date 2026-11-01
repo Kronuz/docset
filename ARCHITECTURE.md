@@ -19,7 +19,7 @@ Set operations walk both key lists and combine matching containers:
 |---|---|---|---|
 | bitmap, bitmap | fused word loop with popcount | same | same |
 | array, bitmap | filter the array by bit tests | set bits into a copy | filter or clear |
-| array, array | `pcmpestrm` block walk | bitonic merge | `pcmpestrm` block walk |
+| array, array | `pcmpistrm` block walk (NEON: compare rotations) | vector merge | `pcmpistrm` block walk (NEON: compare per `b` value) |
 
 - **Kernels** are compiled for their instruction set plus POPCNT through target
   attributes and selected at runtime; without POPCNT, popcounts become bit tricks that
@@ -29,22 +29,29 @@ Set operations walk both key lists and combine matching containers:
 - **Array intersection** compares 8-lane blocks of both arrays with `pcmpistrm`
   ("which lanes of a equal any lane of b") and compacts matches with a 256-entry
   shuffle table, advancing whichever block ends first. `pcmpistrm` treats a zero lane
-  as a terminator; a zero can only be an array's first element, so blocks that start
-  an array use the explicit-length `pcmpestrm`. Skewed sizes (more than 32:1)
-  gallop instead. Without SSE4.2 it falls back to an SSSE3 rotation compare or NEON.
-- **Array union** is the Inoue–Taura vectorized merge: two sorted 8-vectors go
-  through a bitonic merge network (SSE4.1 min/max and blends), the lower half is
-  emitted with duplicates removed by comparing it to itself shifted by one lane, and
-  the next block comes from the list whose head is smaller.
+  as a terminator; a zero can only be an array's first element, so the kernels emit or
+  skip it before the loop. Skewed sizes (more than 32:1) gallop instead. Without
+  SSE4.2 it falls back to an SSSE3 rotation compare or NEON.
+- **Array union** is the Inoue–Taura vectorized merge. Two sorted 8-vectors go
+  through a merge network that returns the eight smallest and the eight largest values
+  (reverse one input, then four rounds of min/max and interleaving the minima with the
+  maxima: `punpck` on SSE, `zip` on NEON). The smallest eight are emitted with
+  duplicates removed by comparing them to themselves shifted by one lane, and the next
+  block comes from the input whose head is smaller (a branch on SSE, a select on NEON).
+  The last values merge on the stack (`unite16_finish`).
 - **Array difference** runs the intersection walk while accumulating which lanes of
   the current block of `a` matched, emitting the unmatched lanes when the walk moves
-  past the block.
+  past the block. The NEON version compares each block of `a` with every `b` value up
+  to the block's last lane, one loop exit per block.
 
 ## Point tests and conversion
 
 `set::test(d)` finds the chunk key, then the low half in an array container, each with
 a branchless lower bound: the comparison feeds a conditional select instead of a jump,
-which suits the small, unpredictable searches here.
+which suits the small, unpredictable searches here. LLVM turns a select on a loaded
+value into a branch on x86-64 unless the condition is marked unpredictable
+(`__builtin_unpredictable`), so the bound carries that hint, and `docset_codegen`
+compiles it to assembly and looks for the conditional move.
 
 A bitmap result at or below 4096 members converts to an array. A per-bit loop
 (`ctz`, clear the lowest bit) mispredicts its exit about once per word at 0.5 to 3 bits
