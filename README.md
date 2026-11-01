@@ -70,8 +70,8 @@ density over 2^24 ordinals, each operation producing a new set. Each timed opera
 takes the next of several random input pairs (eight below density 0.07, two above), so a
 branch predictor cannot memorize one input. Trials alternate between the two libraries,
 and the ratio is the median of per-trial ratios (below 1 means docset is faster). Apple
-clang 17 with `-O3 -DNDEBUG -std=gnu++20` (CRoaring with `-O3 -DNDEBUG`), under
-`quiet strict`. Each cell is the mean of the runs named under the machine; runs agree
+clang 17 with `-O3 -DNDEBUG -std=gnu++20` (CRoaring with `-O3 -DNDEBUG`), on a machine
+kept idle for the run. Each cell is the mean of the runs named under the machine; runs agree
 within 0.06.
 
 Apple M4 Pro (arm64), mean of two runs:
