@@ -40,6 +40,36 @@ library has no releases.
   | 0.1 | 0.21 | 0.73 | 0.72 | 0.85 | 0.13 |
   | 0.5 | 0.69 | 0.74 | 0.73 | 0.82 | 0.13 |
 
+### Changed
+
+- A bitmap AND or ANDNOT result at or below 4096 members converts to an array with a
+  routine chosen by cardinality and CPU. arm64 and x86-64 with BMI1 (`tzcnt`, `blsr`,
+  selected at run time) take two bits per word without a branch up to 1024 members and
+  four per word above; x86 without BMI1 keeps the per-bit loop. The 2026-10-30 form took
+  two bits per word everywhere: on x86 that was slower than the loop (`bsf` and a
+  conditional move for a zero word), and on arm64 it was 10 to 22% slower than the loop
+  above 2.5 bits per word. Bitmap AND against the reference in `test/docset_old.hh`,
+  interleaved, A/A within 3% (before this change in brackets):
+
+  | density (members per chunk) | arm64 M4 Pro | x86-64 i9-9980HK, Apple clang | x86-64, gcc 16 |
+  |---|---:|---:|---:|
+  | 0.1 (about 650) | 3.52x (3.42x) | 2.27x (0.91x) | 2.47x (1.01x) |
+  | 0.2 (about 2600) | 2.81x (0.90x) | 1.86x (0.97x) | 2.21x (0.97x) |
+  | 0.25 (about 4100) | 1.27x (0.78x) | 1.17x (0.96x) | 1.22x (0.97x) |
+
+  Results are unchanged.
+- The conversion is out of line (`container::fill_array`), so the dense path of
+  `from_bitmap`, a move, stays small in `intersect` and `subtract`. With the conversion
+  inlined, ANDNOT of two array containers at density 0.03 was 7% slower than the
+  reference on arm64 (0.935x, now 1.007x). ANDNOT and AND of dense bitmaps were within
+  noise of the reference on x86-64 and arm64 before and after.
+
+### Added
+
+- `test/diff.cc` checks the conversion on bitmap pairs whose AND and ANDNOT are known
+  patterns (random, packed, one to four bits per word, alternating words, the chunk
+  edge) at cardinalities from 1 to 4200, around each threshold.
+
 ## 2026-10-30
 
 ### Changed

@@ -30,7 +30,7 @@ int main() {
 	constexpr std::uint32_t universe = 1u << 24;
 	std::mt19937_64 rng(11);
 	std::printf("%9s %8s %10s %10s %10s %8s %6s\n", "density", "op", "old ns", "old A/A", "new ns", "speedup", "A/A");
-	for (double density : {1e-3, 1e-2, 0.03, 0.1, 0.3, 0.5}) {
+	for (double density : {1e-3, 1e-2, 0.03, 0.1, 0.2, 0.3, 0.5}) {
 		auto make = [&] {
 			std::vector<std::uint32_t> v;
 			std::bernoulli_distribution bern(density);

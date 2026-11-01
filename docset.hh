@@ -46,6 +46,10 @@
 #include <smmintrin.h>
 #include <nmmintrin.h>
 #define DOCSET_SSE 1
+#if defined(__x86_64__)
+#include <immintrin.h>
+#define DOCSET_BMI 1
+#endif
 #elif defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
 #define DOCSET_NEON 1
@@ -731,6 +735,93 @@ inline std::uint32_t combine_words(const std::uint64_t* x, const std::uint64_t* 
 	return combine_words_generic(x, y, z, op);
 }
 
+// ---- bitmap to array --------------------------------------------------------------------
+
+// Each routine writes the sorted positions of the set bits of one chunk bitmap to out. The
+// branch-free forms store blindly past the last position, so out has room for card + 2 entries.
+
+// One loop iteration per set bit: the exit branch of the inner loop is taken about once per
+// word, and mispredicts when the bits per word vary (a result near 1 bit per word).
+inline void extract_loop(const std::uint64_t* words, std::uint16_t* out) noexcept {
+	std::size_t k = 0;
+	for (std::size_t i = 0; i < bitmap_words; ++i) {
+		for (std::uint64_t w = words[i]; w; w &= w - 1) { out[k++] = std::uint16_t(i * 64 + unsigned(std::countr_zero(w))); }
+	}
+}
+
+// Two or four bits per word without a branch (the output index advances only on a set bit), then
+// a loop for any rest. Fast where count-trailing-zeros of zero costs nothing extra (arm64).
+template <bool Four>
+inline void extract_branchless(const std::uint64_t* words, std::uint16_t* out) noexcept {
+	std::size_t k = 0;
+	for (std::size_t i = 0; i < bitmap_words; ++i) {
+		std::uint64_t w = words[i];
+		const std::uint16_t base = std::uint16_t(i * 64);
+		out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
+		k += w != 0;
+		w &= w - 1;
+		out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
+		k += w != 0;
+		w &= w - 1;
+		if constexpr (Four) {
+			out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
+			k += w != 0;
+			w &= w - 1;
+			out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
+			k += w != 0;
+			w &= w - 1;
+		}
+		for (; w; w &= w - 1) { out[k++] = std::uint16_t(base + unsigned(std::countr_zero(w))); }
+	}
+}
+
+// Up to this many members (one bit per word on average) two extractions per word are enough;
+// above it four win, up to array_max (four bits per word on average).
+inline constexpr std::uint32_t extract_two_max = bitmap_words;
+
+#if DOCSET_BMI
+// The same form with BMI1 instructions. Without them count-trailing-zeros of a possibly-zero
+// word compiles to bsf and a conditional move, which makes the branch-free form slower than the
+// loop; tzcnt returns 64 for zero by itself and blsr clears the lowest bit in one instruction.
+template <bool Four>
+__attribute__((target("bmi"))) inline void extract_bmi(const std::uint64_t* words, std::uint16_t* out) noexcept {
+	std::size_t k = 0;
+	for (std::size_t i = 0; i < bitmap_words; ++i) {
+		std::uint64_t w = words[i];
+		const std::uint16_t base = std::uint16_t(i * 64);
+		out[k] = std::uint16_t(base + unsigned(_tzcnt_u64(w)));
+		k += w != 0;
+		w = _blsr_u64(w);
+		out[k] = std::uint16_t(base + unsigned(_tzcnt_u64(w)));
+		k += w != 0;
+		w = _blsr_u64(w);
+		if constexpr (Four) {
+			out[k] = std::uint16_t(base + unsigned(_tzcnt_u64(w)));
+			k += w != 0;
+			w = _blsr_u64(w);
+			out[k] = std::uint16_t(base + unsigned(_tzcnt_u64(w)));
+			k += w != 0;
+			w = _blsr_u64(w);
+		}
+		for (; w; w = _blsr_u64(w)) { out[k++] = std::uint16_t(base + unsigned(_tzcnt_u64(w))); }
+	}
+}
+#endif
+
+// card is the number of set bits. x86 without BMI1 keeps the loop; everything else takes the
+// branch-free form, two or four bits per word by density.
+inline void extract_bits(const std::uint64_t* words, std::uint16_t* out, [[maybe_unused]] std::uint32_t card) noexcept {
+#if DOCSET_BMI
+	static const bool bmi = __builtin_cpu_supports("bmi");
+	if (bmi) { return card <= extract_two_max ? extract_bmi<false>(words, out) : extract_bmi<true>(words, out); }
+	return extract_loop(words, out);
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+	return extract_loop(words, out);
+#else
+	return card <= extract_two_max ? extract_branchless<false>(words, out) : extract_branchless<true>(words, out);
+#endif
+}
+
 // One 64Ki-ordinal chunk: a sorted array of low halves, or a bitmap past array_max members.
 struct container {
 	buffer<std::uint16_t> array;
@@ -763,32 +854,25 @@ struct container {
 		return c;
 	}
 
-	// Keeps a bitmap result above array_max members, converts it to an array otherwise.
+	// Keeps a bitmap result above array_max members, converts it to an array otherwise. The
+	// dense case is a move and stays small enough to inline into the callers; the conversion
+	// is out of line so its loop does not bloat them.
 	static container from_bitmap(buffer<std::uint64_t> words, std::uint32_t card) {
 		container c;
 		c.card = card;
 		if (card > array_max) {
 			c.bitmap = std::move(words);
 		} else {
-			// Sparse words hold about one bit: extract two per word branch-free (the index advances
-			// only on a set bit), loop for a rare third. Padding keeps the blind writes in bounds.
-			c.array.resize(std::size_t(card) + 2);
-			std::uint16_t* out = c.array.data();
-			std::size_t k = 0;
-			for (std::size_t i = 0; i < bitmap_words; ++i) {
-				std::uint64_t w = words[i];
-				const std::uint16_t base = std::uint16_t(i * 64);
-				out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
-				k += w != 0;
-				w &= w - 1;
-				out[k] = std::uint16_t(base + unsigned(std::countr_zero(w)));
-				k += w != 0;
-				w &= w - 1;
-				for (; w; w &= w - 1) { out[k++] = std::uint16_t(base + unsigned(std::countr_zero(w))); }
-			}
-			c.array.resize(card);
+			c.fill_array(words);
 		}
 		return c;
+	}
+
+	// Padding keeps the blind writes of the branch-free extraction in bounds.
+	__attribute__((noinline)) void fill_array(const buffer<std::uint64_t>& words) {
+		array.resize(std::size_t(card) + 2);
+		extract_bits(words.data(), array.data(), card);
+		array.resize(card);
 	}
 
 	buffer<std::uint64_t> words() const {

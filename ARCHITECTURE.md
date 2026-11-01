@@ -44,9 +44,19 @@ Set operations walk both key lists and combine matching containers:
 
 `set::test(d)` finds the chunk key, then the low half in an array container, each with
 a branchless lower bound: the comparison feeds a conditional select instead of a jump,
-which suits the small, unpredictable searches here. A bitmap result at or below 4096
-members converts to an array by extracting two bits per word without a branch, with a
-rare third bit handled by a loop.
+which suits the small, unpredictable searches here.
+
+A bitmap result at or below 4096 members converts to an array. A per-bit loop
+(`ctz`, clear the lowest bit) mispredicts its exit about once per word at 0.5 to 3 bits
+per word, which was most of the cost of a sparse AND of two bitmaps. The conversion
+instead takes two bits per word without a branch (the output index advances only where
+a bit was found) up to 1024 members, four per word above that, and loops over any rest.
+It needs a count-trailing-zeros that is cheap for a zero word: arm64 has one, and x86-64
+gets it from BMI1 (`tzcnt`, `blsr`) in a function compiled with a target attribute and
+selected at run time. An x86 CPU without BMI1 keeps the loop, because `bsf` plus a
+conditional move makes the branch-free form slower than the loop. The conversion is out
+of line (`container::fill_array`), so the dense path of `from_bitmap`, a move, stays
+small enough to inline into `intersect` and `subtract`.
 
 ## Iterators
 

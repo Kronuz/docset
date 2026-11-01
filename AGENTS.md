@@ -16,6 +16,9 @@ docs/docset.d2     README diagram; render: d2 --layout elk --sketch --theme 302 
 - Containers hold at most 4096 array members; bitmaps hold more. Empty containers are never stored.
 - `count()` is maintained by every operation; never recompute it lazily.
 - SIMD kernels need 8 elements of slack in their output buffers.
+- The branch-free bitmap-to-array extraction (`extract_bits`) stores blindly past the last
+  position, so `container::fill_array` sizes the array to card + 2 before it runs. x86 uses
+  BMI1 behind a run-time check; without it the loop is faster than the branch-free form.
 - Never pass an empty vector's `data()` to `memcpy`; use `detail::copy_bytes`.
 
 ## Verify a change

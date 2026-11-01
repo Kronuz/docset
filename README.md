@@ -98,6 +98,15 @@ cmake --build build && build/docset_bench
 `DOCSET_BENCH_REFERENCE` builds CRoaring for the benchmark only; the library never
 links it.
 
+One code path depends on the CPU: a bitmap AND or ANDNOT whose result falls below 4096
+members converts to an array (an AND of two density-0.1 sets produces about 650 members
+per chunk). The conversion takes two or four bits per word without a branch, chosen by
+the result size, and on x86-64 uses BMI1 when the CPU has it. Against the frozen
+reference in `test/docset_old.hh` (`docset_cmp_bench`), the density-0.1 AND is 3.5x
+faster on an Apple M4 Pro and 2.3x to 2.5x on an i9-9980HK (Apple clang, gcc 16); the
+density-0.2 AND is 2.8x and 1.9x to 2.2x. The table above was measured before this
+conversion. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## 🛠️ Building and testing
 
 ```sh
