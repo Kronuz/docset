@@ -99,9 +99,9 @@ Intel Core i9-9980HK (x86-64, macOS 15), mean of three runs:
 | 0.5 | 0.75 | 0.84 | 0.87 | 0.61 | 0.15 |
 
 docset is faster in every cell on the M4. On the i9 it is faster in every cell but OR and
-ANDNOT at density 1e-2 (arrays of about 650 members per chunk), where CRoaring's
-AVX2-compiled merge and difference kernels are 3% and 20% faster. On x86-64 CPUs with
-AVX-512, CRoaring also has AVX-512 array kernels that docset does not.
+ANDNOT at density 1e-2 (arrays of about 650 members per chunk), where CRoaring is 3% and
+20% faster. On x86-64 CPUs with AVX-512, CRoaring also has AVX-512 array kernels that
+docset does not.
 
 Reproduce with:
 
