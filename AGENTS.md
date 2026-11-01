@@ -21,8 +21,10 @@ docs/docset.d2     README diagram; render: d2 --layout elk --sketch --theme 302 
 - `count()` is maintained by every operation; never recompute it lazily.
 - SIMD kernels need 8 elements of slack in their output buffers.
 - The branch-free bitmap-to-array extraction (`extract_bits`) stores blindly past the last
-  position, so `container::fill_array` sizes the array to card + 2 before it runs. x86 uses
-  BMI1 behind a run-time check; without it the loop is faster than the branch-free form.
+  position, so `container::fill_array` sizes the array to card + 2 before it runs. Results
+  of up to `extract_loop_max` members (96 on x86-64, 32 on arm64) take the plain loop,
+  which costs less than the branch-free form's fixed cost per word. x86 uses BMI1 behind a
+  run-time check; without it the loop is faster than the branch-free form.
 - Never pass an empty vector's `data()` to `memcpy`; use `detail::copy_bytes`.
 - `lower_bound_index` marks its select unpredictable (`DOCSET_UNPREDICTABLE`): LLVM compiles a select on a loaded
   value to a branch on x86-64 otherwise. `docset_codegen` checks the assembly.

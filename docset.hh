@@ -922,17 +922,50 @@ __attribute__((target("bmi"))) inline void extract_bmi(const std::uint64_t* word
 }
 #endif
 
+// The form extract_bits runs for a result of card members: the plain loop up to loop_max
+// members, then two bits per word up to extract_two_max, then four.
+enum class extract_form : std::uint8_t { loop, two, four };
+
+constexpr extract_form pick_extract_form(std::uint32_t card, std::uint32_t loop_max) noexcept {
+	return card <= loop_max ? extract_form::loop : card <= extract_two_max ? extract_form::two : extract_form::four;
+}
+
+// The branch-free forms cost the same for any result (stores for every word); the loop costs
+// 5 to 9 ns per member (one mispredicted exit per word), so it wins up to the size where the
+// two meet (bench/micro_extract.cc): 39 to 43 members on an Apple M4 Pro (Apple clang 17, gcc
+// 16, LLVM 23), 99 (gcc 16) to 135 (LLVM 23) on an Intel i9-9980HK, 195 (gcc 11) on an AMD
+// EPYC 7763. The limit is the lowest crossover rounded down to a multiple of 16, so on none
+// of them does it pick the slower form. Other targets take the loop for an empty result only.
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+inline constexpr std::uint32_t extract_loop_max = 96;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+inline constexpr std::uint32_t extract_loop_max = 32;
+#else
+inline constexpr std::uint32_t extract_loop_max = 0;
+#endif
+
 // card is the number of set bits. x86 without BMI1 keeps the loop; everything else takes the
-// branch-free form, two or four bits per word by density.
+// loop up to extract_loop_max members and then the branch-free form, two or four bits per word.
 inline void extract_bits(const std::uint64_t* words, std::uint16_t* out, [[maybe_unused]] std::uint32_t card) noexcept {
 #if DOCSET_BMI
 	static const bool bmi = __builtin_cpu_supports("bmi");
-	if (bmi) { return card <= extract_two_max ? extract_bmi<false>(words, out) : extract_bmi<true>(words, out); }
+	if (bmi) {
+		switch (pick_extract_form(card, extract_loop_max)) {
+			case extract_form::loop: return extract_loop(words, out);
+			case extract_form::two: return extract_bmi<false>(words, out);
+			case extract_form::four: return extract_bmi<true>(words, out);
+		}
+	}
 	return extract_loop(words, out);
 #elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 	return extract_loop(words, out);
 #else
-	return card <= extract_two_max ? extract_branchless<false>(words, out) : extract_branchless<true>(words, out);
+	switch (pick_extract_form(card, extract_loop_max)) {
+		case extract_form::loop: return extract_loop(words, out);
+		case extract_form::two: return extract_branchless<false>(words, out);
+		case extract_form::four: return extract_branchless<true>(words, out);
+	}
+	return extract_loop(words, out);
 #endif
 }
 

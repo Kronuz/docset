@@ -79,8 +79,28 @@ static docs shaped(std::mt19937_64& rng, int shape, std::uint32_t card) {
 	return docs(s.begin(), s.end());
 }
 
+// Which extraction form a result of each size takes: the plain loop up to the limit, two bits per word
+// from there to extract_two_max, four above. The first argument is the member count, the second the loop
+// limit, so the boundary is checked for the limits of every CPU path and not only the one built.
+namespace dd = docset::detail;
+static_assert(dd::pick_extract_form(0, 0) == dd::extract_form::loop);
+static_assert(dd::pick_extract_form(1, 0) == dd::extract_form::two);
+static_assert(dd::pick_extract_form(32, 32) == dd::extract_form::loop);
+static_assert(dd::pick_extract_form(33, 32) == dd::extract_form::two);
+static_assert(dd::pick_extract_form(96, 96) == dd::extract_form::loop);
+static_assert(dd::pick_extract_form(97, 96) == dd::extract_form::two);
+static_assert(dd::pick_extract_form(dd::extract_two_max, 96) == dd::extract_form::two);
+static_assert(dd::pick_extract_form(dd::extract_two_max + 1, 96) == dd::extract_form::four);
+static_assert(dd::pick_extract_form(dd::array_max, 96) == dd::extract_form::four);
+static_assert(dd::extract_loop_max < dd::extract_two_max);
+
 static void extraction(std::mt19937_64& rng) {
-	static const std::uint32_t cards[] = {0, 1, 2, 3, 5, 8, 63, 64, 65, 127, 500, 1000, 1023, 1024, 1025, 1536, 2047, 2048, 2049, 3000, 3071, 3072, 3073, 4000, 4094, 4095, 4096, 4097, 4098, 4200};
+	// Sizes on both sides of each limit of extract_bits: the loop limit of every CPU path (32 on arm64,
+	// 96 on x86-64) and of the build, the end of the two-bit form, and the largest array.
+	std::vector<std::uint32_t> cards = {0, 1, 2, 3, 5, 8, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128, 129, 500, 1000, 1023, 1024, 1025, 1536, 2047, 2048, 2049, 3000, 3071, 3072, 3073, 4000, 4094, 4095, 4096, 4097, 4098, 4200};
+	for (std::uint32_t edge : {dd::extract_loop_max, dd::extract_two_max}) {
+		for (std::uint32_t card : {edge ? edge - 1 : 0, edge, edge + 1}) { cards.push_back(card); }
+	}
 	const std::uint32_t universe = 65536;
 	for (int rep = 0; rep < 3; ++rep) {
 		for (std::uint32_t card : cards) {

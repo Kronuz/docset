@@ -6,8 +6,42 @@ library has no releases.
 
 ## 2026-11-01
 
+### Changed
+
+- **Small bitmap results take the plain loop.** A bitmap AND or ANDNOT whose result has
+  at most `extract_loop_max` members (96 on x86-64, 32 on arm64) converts to an array
+  with the per-bit loop instead of the branch-free form of `511c575`. The branch-free
+  forms take the same time for any result (a store per slot of every word: about 1450 ns
+  on the i9, 560 on the M4); the loop takes 5 to 9 ns per member over a floor of 270 to
+  290 ns (clang), so it is faster below 130 members on the i9 (Apple clang), 40 on the M4
+  and 195 on an AMD EPYC 7763 (gcc 11). Each limit is the lowest crossover over the
+  compilers measured (`bench/micro_extract.cc`: Apple clang 17, gcc 16 and LLVM 23 on the
+  i9 and the M4; gcc 11 on the EPYC; the lowest are 99 members for gcc 16 on the i9 and
+  39 for Apple clang on the M4), rounded down to a multiple of 16. Results above the
+  limit and every other path are unchanged, and the extracted positions are identical at
+  every size (`test/diff.cc`). Extraction of one bitmap, M4 / i9: an empty result 563 ->
+  274 ns / 1447 -> 289, 13 members 571 -> 391 / 1447 -> 394, 33 members 569 -> 516 /
+  1468 -> 590.
+  End to end (`bench/ab_bench.cc`, the previous header against this one, best of five
+  runs): AND and ANDNOT of two bitmaps with 20 members per chunk 2.08x and 2.11x on the
+  i9 and 1.23x and 1.24x on the M4; 40 members 1.76x and 1.75x on the i9; 80 members 1.30x
+  and 1.31x on the i9; 160 and 400 members 1.00x on the i9 (the same code runs). No row on
+  the i9 is more than 2% slower. The array ANDNOT rows at densities 1e-3, 1e-2 and 0.031,
+  which never reach the extraction, are 1.11x, 1.35x and 1.53x faster in all three runs.
+  On the M4 the rows `or` and `andnot` at density 0.07 and `test` of an 8-member chunk
+  swing by 10 to 17% from one run to the next of the same two binaries. Outside
+  `extract_bits` the two binaries hold the same instructions at shifted addresses.
+
 ### Added
 
+- `docset::detail::pick_extract_form`, the choice of extraction form by member count and
+  loop limit, with `static_assert`s at both sides of each boundary in `test/diff.cc`, and
+  extraction cases at the loop limit of each CPU path (31 to 33, 95 to 97) and of the
+  build, one on each side. The `<` mutant of the comparison fails to compile, and a loop
+  that emits the wrong position fails `docset_diff` at small results only.
+- `bench/ab_bench.cc` rows `and` and `andnot bitmaps, N members per chunk` (N = 20, 40,
+  80, 160, 400): bitmap operands whose result has few members, which the density rows
+  (321 members at the least) do not reach.
 - Boundary tests. `test/diff.cc` takes bitmap AND and ANDNOT results of exactly 0, 4094 to
   4098 and 65536 members, in the first, second and last chunk, and checks contents, count,
   `chunks()` (an empty result leaves no chunk) and `test()` against the reference; its

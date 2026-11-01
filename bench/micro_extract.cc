@@ -5,7 +5,7 @@
 // for identical output before it is timed. The BMI rows exist on x86-64 only and run when the
 // CPU has BMI1.
 //
-// usage: docset_micro_extract [ROUNDS [DENSITIES]]   (default 15 and 0.002,0.005,0.01,0.02,0.04,0.06)
+// usage: docset_micro_extract [ROUNDS [DENSITIES]]   (default 15 and 0.0005,0.001,0.002,0.003,0.005,0.01,0.02,0.04,0.06)
 // Densities are per-bit probabilities; a bitmap holds at most 4096 members when it becomes an array.
 // Output: the median ns per bitmap of each variant, one line per density.
 #include "docset.hh"
@@ -141,7 +141,7 @@ static volatile std::size_t sink;
 
 int main(int argc, char** argv) {
 	const int rounds = argc > 1 ? std::atoi(argv[1]) : 15;
-	const std::string densities = argc > 2 ? argv[2] : "0.002,0.005,0.01,0.02,0.04,0.06";
+	const std::string densities = argc > 2 ? argv[2] : "0.0005,0.001,0.002,0.003,0.005,0.01,0.02,0.04,0.06";
 	std::vector<Variant> variants = {{"landed", ext_landed, false}, {"loop", ext_loop, false}, {"two", ext_two, false},
 	                                 {"four", ext_four, false}, {"table", ext_table, false}
 #if defined(__x86_64__)

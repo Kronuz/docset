@@ -114,10 +114,11 @@ cmake --build build --target docset_bench && build/docset_bench
 only; the library never links it. `-DFETCHCONTENT_SOURCE_DIR_CROARING=<checkout>` uses a
 local checkout instead.
 
-Two code paths depend on the CPU. A bitmap AND or ANDNOT whose result falls below 4096
+Two code paths depend on the CPU. A bitmap AND or ANDNOT whose result has at most 4096
 members converts to an array (an AND of two density-0.1 sets produces about 650 members
-per chunk); the conversion takes two or four bits per word without a branch, chosen by
-the result size, and on x86-64 uses BMI1 when the CPU has it. The array kernels are
+per chunk). Up to 96 members on x86-64 and 32 on arm64 the conversion is a plain loop
+over the set bits; above that it takes two or four bits per word without a branch, chosen
+by the result size, and on x86-64 uses BMI1 when the CPU has it. The array kernels are
 compiled for SSE4.2 or NEON. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Bitmap-to-array extraction
@@ -127,35 +128,44 @@ variants it is chosen from: the plain loop (one iteration per set bit), two or f
 word without a branch, a byte table, and on x86-64 the BMI1 forms. Each timed pass cycles
 through 256 different bitmaps, so a branch predictor cannot memorize the data, and every
 variant is checked for identical output first. Median nanoseconds per 64Ki-bit bitmap over
-15 rounds, Apple clang 17 `-O3 -DNDEBUG`; `landed` is `docset::detail::extract_bits`, the
-routine the set operations call:
+15 rounds, mean of two runs, Apple clang 17 `-O3 -DNDEBUG`; `landed` is
+`docset::detail::extract_bits`, the routine the set operations call:
 
-Apple M4 Pro (arm64), two runs agree within 2%:
+Apple M4 Pro (arm64), the runs agree within 5%:
 
 | Members | landed | loop | two bits | four bits |
 |---:|---:|---:|---:|---:|
-| 131 | 590 | 969 | 567 | 1071 |
-| 655 | 790 | 3714 | 774 | 1083 |
-| 1311 | 1162 | 4730 | 1515 | 1160 |
-| 2621 | 2230 | 6086 | 6640 | 2241 |
-| 3932 | 5601 | 7021 | 9167 | 5640 |
+| 13 | 391 | 407 | 560 | 1076 |
+| 33 | 516 | 516 | 556 | 1070 |
+| 131 | 568 | 980 | 564 | 1070 |
+| 655 | 770 | 3516 | 768 | 1082 |
+| 1311 | 1166 | 4552 | 1717 | 1171 |
+| 2621 | 2229 | 6068 | 6686 | 2230 |
+| 3932 | 5565 | 6972 | 9158 | 5558 |
 
-Intel Core i9-9980HK (x86-64, macOS 15), the second of two runs (they agree within 13%):
+Intel Core i9-9980HK (x86-64, macOS 15), the runs agree within 10%:
 
 | Members | landed | loop | BMI1 loop | BMI1 two bits | BMI1 four bits |
 |---:|---:|---:|---:|---:|---:|
-| 131 | 1439 | 1431 | 1307 | 1395 | 2442 |
-| 655 | 1685 | 4728 | 4597 | 1714 | 2603 |
-| 1311 | 2570 | 5978 | 5836 | 2689 | 2633 |
-| 2621 | 3734 | 7859 | 7166 | 6999 | 3757 |
-| 3932 | 6649 | 8818 | 7875 | 8686 | 6719 |
+| 13 | 394 | 392 | 414 | 1472 | 2502 |
+| 33 | 590 | 572 | 569 | 1456 | 2532 |
+| 131 | 1452 | 1488 | 1469 | 1456 | 2506 |
+| 655 | 1644 | 4634 | 4642 | 1674 | 2586 |
+| 1311 | 2614 | 5905 | 5932 | 2681 | 2652 |
+| 2621 | 3691 | 7490 | 7228 | 7046 | 3728 |
+| 3932 | 6720 | 8587 | 7928 | 8588 | 6764 |
 
-From 655 members up `landed` is the fastest form or within 5% of it in both tables, and
-within 10% of it below. Under about 130 members on the i9 (65 members: 893 ns for the loop
-against 1457 for `landed`) and about 250 on a shared AMD EPYC 7763 VM the plain loop is faster
-than the branch-free forms; on the M4 `landed` is faster than the loop down to 65 members.
-gcc 16 on the i9 and clang 12 and gcc 11 on the EPYC order the forms alike: the BMI1
-branch-free forms lead from about 650 members up.
+`landed` is the fastest form or within 5% of it in every row. The branch-free forms cost the
+same for any result (1450 ns on the i9, 560 on the M4 for two bits per word), while the
+loop costs 5 to 9 ns per member below 200 members, so the loop wins below about 130
+members on the i9 and 40 on the M4 under Apple clang; `landed` takes it up to 96 and 32.
+Other compilers move the crossover: gcc 16 on the i9 99 members (its loop is 2.5x slower on
+an empty bitmap), gcc 16 and LLVM 23 on the M4 43, LLVM 23 on the i9 135. On a shared
+AMD EPYC 7763 VM under gcc 11 the loop wins up to about 195 members (131 members: 1520 ns
+against 1960), so results of 97 to 195 members take a branch-free form that is slower there
+by up to 45%. The limits are the lowest crossover rounded down to a multiple of 16. With
+gcc 16 on the i9 and gcc 11 on the EPYC the BMI1 branch-free forms lead from about 650
+members up, as under Apple clang.
 
 ## 🛠️ Building and testing
 

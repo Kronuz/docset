@@ -15,6 +15,7 @@ namespace ds = docset;
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <numeric>
 #include <random>
 #include <vector>
 
@@ -73,6 +74,41 @@ int main(int argc, char** argv) {
 		report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a | in.b).count(); }));
 		std::snprintf(name, sizeof name, "andnot d=%g x %g", p[0], p[1]);
 		report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a - in.b).count(); }));
+	}
+
+	// Bitmap operands whose result has few members per chunk (a filter that keeps or drops a handful
+	// of documents). Per chunk, S is the n result members and R1, R2 two disjoint sets of 4500: the
+	// AND takes A = S + R1 with B = S + R2, the ANDNOT A = S + R1 with B = R1 + R2 (A - B = S).
+	// The result is a bitmap converted to an array, so these rows time the extraction.
+	for (std::uint32_t n : {20, 40, 80, 160, 400}) {
+		struct pair_in { ds::set a, b, c; };  // c is B for the ANDNOT
+		std::vector<pair_in> inputs;
+		std::vector<std::uint32_t> order(65536);
+		for (std::size_t copy = 0; copy < 4; ++copy) {
+			std::vector<std::uint32_t> a, b, c;
+			for (std::uint32_t chunk = 0; chunk < universe >> 16; ++chunk) {
+				std::iota(order.begin(), order.end(), chunk << 16);
+				std::shuffle(order.begin(), order.end(), rng);
+				std::vector<std::uint32_t> s(order.begin(), order.begin() + n), r1(order.begin() + n, order.begin() + n + 4500),
+				    r2(order.begin() + n + 4500, order.begin() + n + 9000);
+				auto join = [](std::vector<std::uint32_t>& out, const std::vector<std::uint32_t>& x, const std::vector<std::uint32_t>& y) {
+					const std::size_t at = out.size();
+					out.insert(out.end(), x.begin(), x.end());
+					out.insert(out.end(), y.begin(), y.end());
+					std::sort(out.begin() + long(at), out.end());
+				};
+				join(a, s, r1);
+				join(b, s, r2);
+				join(c, r1, r2);
+			}
+			inputs.push_back({ds::set::from_sorted(universe, a), ds::set::from_sorted(universe, b), ds::set::from_sorted(universe, c)});
+		}
+		std::size_t turn = 0;
+		auto next = [&]() -> const pair_in& { return inputs[turn++ % inputs.size()]; };
+		std::snprintf(name, sizeof name, "and    bitmaps, %u members per chunk", n);
+		report(name, best_ns([&] { const pair_in& in = next(); sink = sink + (in.a & in.b).count(); }));
+		std::snprintf(name, sizeof name, "andnot bitmaps, %u members per chunk", n);
+		report(name, best_ns([&] { const pair_in& in = next(); sink = sink + (in.a - in.c).count(); }));
 	}
 
 	// Iteration over one set.
