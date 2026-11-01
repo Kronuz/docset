@@ -38,33 +38,35 @@ library has no releases.
 
 Against the start (`test/docset_old.hh`, one binary per version, interleaved rounds, best
 time; below 1 means slower; `bench/ab_compare.py`, 2^22 ordinals, each operation over a
-pool of 16 random inputs below density 0.07 and 4 above). A/A is 0.97-1.03 except where
-noted:
+pool of 16 random inputs below density 0.07 and 4 above). The runs on the M4 and the i9
+took the better of two old-binary runs per round against one new run, which understates
+the new code by the run-to-run noise; the M1 column and later runs use one of each. A/A
+is 0.97-1.03 except where noted:
 
-| Row | arm64 M4 Pro | x86-64 i9-9980HK, Apple clang | x86-64 i9, gcc 16 |
-|---|---:|---:|---:|
-| AND arrays, density 0.01 | 0.99 | 1.05 | 1.20 |
-| AND arrays, density 0.031 | 0.99 | 1.06 | 1.23 |
-| OR arrays, density 1e-3 | 2.22 | 1.20 | 1.16 |
-| OR arrays, density 1e-2 | 2.78 | 1.20 | 1.11 |
-| OR arrays, density 0.031 | 1.91 | 1.18 | 1.09 |
-| ANDNOT arrays, density 1e-3 | 1.14 | 1.06 | 1.01 |
-| ANDNOT arrays, density 1e-2 | 1.50 | 1.28 | 1.02 |
-| ANDNOT arrays, density 0.031 | 1.57 | 1.36 | 1.02 |
-| AND bitmaps, density 0.1 | 3.63 | 2.30 | 2.39 |
-| AND bitmaps, density 0.2 | 3.33 | 1.85 | 2.16 |
-| ANDNOT 0.1 x 0.9 | 3.27 | 2.26 | 2.37 |
-| `test()`, density 0.01 | 2.13 | 1.61 | 2.85 |
-| `test()`, density 0.5 | 1.65 | 1.15 | 2.77 |
-| `test()`, 1 chunk, 8 members | 1.30 | 1.47 | 2.69 |
-| `test()`, 1 chunk, 4096 members | 1.74 | 1.51 | 3.79 |
-| `test()`, 65,536 chunks | 1.47 | 1.22 | 1.93 |
+| Row | arm64 M4 Pro | arm64 M1 Pro | x86-64 i9-9980HK, Apple clang | x86-64 i9, gcc 16 |
+|---|---:|---:|---:|---:|
+| AND arrays, density 0.01 | 0.99 | 1.00 | 1.05 | 1.20 |
+| AND arrays, density 0.031 | 0.99 | 1.00 | 1.06 | 1.23 |
+| OR arrays, density 1e-3 | 2.22 | 1.69 | 1.20 | 1.16 |
+| OR arrays, density 1e-2 | 2.78 | 2.38 | 1.20 | 1.11 |
+| OR arrays, density 0.031 | 1.91 | 1.65 | 1.18 | 1.09 |
+| ANDNOT arrays, density 1e-3 | 1.14 | 1.31 | 1.06 | 1.01 |
+| ANDNOT arrays, density 1e-2 | 1.50 | 1.55 | 1.28 | 1.02 |
+| ANDNOT arrays, density 0.031 | 1.57 | 1.57 | 1.36 | 1.02 |
+| AND bitmaps, density 0.1 | 3.63 | 2.98 | 2.30 | 2.39 |
+| AND bitmaps, density 0.2 | 3.33 | 2.21 | 1.85 | 2.16 |
+| ANDNOT 0.1 x 0.9 | 3.27 | 2.96 | 2.26 | 2.37 |
+| `test()`, density 0.01 | 2.13 | 2.00 | 1.61 | 2.85 |
+| `test()`, density 0.5 | 1.65 | 1.60 | 1.15 | 2.77 |
+| `test()`, 1 chunk, 8 members | 1.30 | 1.67 | 1.47 | 2.69 |
+| `test()`, 1 chunk, 4096 members | 1.74 | 1.56 | 1.51 | 3.79 |
+| `test()`, 65,536 chunks | 1.47 | 1.39 | 1.22 | 1.93 |
 
 Rows between 0.96 and 1.05 are the dense bitmap OR, ANDNOT, and AND at densities
-0.07-0.9 and iteration, whose code did not change. Two rows read lower and carry a noisy
-A/A: OR and ANDNOT at density 0.07 on the M4 (0.87 and 0.91, A/A 0.85 and 0.89: the two
-runs of the same binary differ by that much there) and `iterate` at density 0.5 under
-GCC (0.92, A/A 0.96).
+0.07-0.9 and iteration, whose code did not change; on the M1 the dense OR and ANDNOT rows
+read 0.92-0.94 with an A/A of 0.92-0.95, the same-binary run-to-run difference. Two rows
+read lower on the M4 and carry a noisy A/A: OR and ANDNOT at density 0.07 (0.87 and 0.91,
+A/A 0.85 and 0.89) and `iterate` at density 0.5 under GCC on the i9 (0.92, A/A 0.96).
 
 ### Fixed
 

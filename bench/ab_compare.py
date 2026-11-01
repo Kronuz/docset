@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Compare two docset_ab_* binaries (old = test/docset_old.hh, new = docset.hh) row by row.
 
-Runs old, new, old again in every round (the second old run is the A/A noise column) and
-reports, per row, the best time over the rounds and old/new (above 1 means new is faster).
+Runs old, new, old again in every round (the second old run only feeds the A/A noise
+column) and reports, per row, the best time of each binary over the rounds and old/new
+(above 1 means new is faster). Both sides of old/new have one run per round, so neither is
+favored by taking the better of two.
 Usage: ab_compare.py OLD NEW [rounds=5] [universe_bits=22]
 """
 import subprocess
@@ -30,9 +32,8 @@ def main():
     print(f"{'row':44s} {'old ns':>11s} {'new ns':>11s} {'old/new':>8s} {'range':>13s} {'A/A':>6s}")
     for name in runs["a"][0]:
         best = {k: min(r[name] for r in v) for k, v in runs.items()}
-        old_best = min(best["a"], best["b"])
-        per_round = [min(a[name], b[name]) / n[name] for a, n, b in zip(runs["a"], runs["n"], runs["b"])]
-        print(f"{name:44s} {old_best:11.1f} {best['n']:11.1f} {old_best / best['n']:8.2f} "
+        per_round = [a[name] / n[name] for a, n in zip(runs["a"], runs["n"])]
+        print(f"{name:44s} {best['a']:11.1f} {best['n']:11.1f} {best['a'] / best['n']:8.2f} "
               f"{min(per_round):6.2f}-{max(per_round):<6.2f} {best['a'] / best['b']:6.2f}")
 
 
