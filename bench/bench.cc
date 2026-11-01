@@ -48,6 +48,9 @@ int main() {
 	constexpr doc_t universe = 1u << 24;
 	std::mt19937_64 rng(11);
 	volatile std::uint64_t sink = 0;
+#if DOCSET_BENCH_REFERENCE
+	std::printf("CRoaring %s; every operation's members are checked against it before timing\n", ROARING_VERSION);
+#endif
 	std::printf("%9s %8s %12s %12s %7s\n", "density", "op", "docset ns", "roaring ns", "ratio");
 	for (double density : {1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1, 0.5}) {
 		// Each timed operation takes the next of several random input pairs: repeating one input
@@ -79,6 +82,27 @@ int main() {
 		for (std::size_t c = 0; c < copies; ++c) {
 			ra[c] = roaring_bitmap_of_ptr(va[c].size(), va[c].data());
 			rb[c] = roaring_bitmap_of_ptr(vb[c].size(), vb[c].data());
+		}
+		// Before any timing: every operation gives CRoaring's members, in the same order.
+		auto same = [&](const docset::set& d, roaring_bitmap_t* r) {
+			std::vector<doc_t> x, y(roaring_bitmap_get_cardinality(r));
+			x.reserve(y.size());
+			d.for_each([&](doc_t v) { x.push_back(v); });
+			roaring_bitmap_to_uint32_array(r, y.data());
+			return d.count() == y.size() && x == y;
+		};
+		for (std::size_t c = 0; c < copies; ++c) {
+			roaring_bitmap_t* rand_ = roaring_bitmap_and(ra[c], rb[c]);
+			roaring_bitmap_t* ror = roaring_bitmap_or(ra[c], rb[c]);
+			roaring_bitmap_t* rnot = roaring_bitmap_andnot(ra[c], rb[c]);
+			const bool ok = same(a[c], ra[c]) && same(a[c] & b[c], rand_) && same(a[c] | b[c], ror) && same(a[c] - b[c], rnot);
+			roaring_bitmap_free(rand_);
+			roaring_bitmap_free(ror);
+			roaring_bitmap_free(rnot);
+			if (!ok) {
+				std::printf("MISMATCH at density %g, copy %zu\n", density, c);
+				return 1;
+			}
 		}
 		std::size_t their_turn = 0;
 		auto row = [&](const char* name, auto&& ours, auto&& theirs) {

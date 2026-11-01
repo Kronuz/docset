@@ -34,6 +34,8 @@ library has no releases.
 
 ### Added
 
+- `bench/bench.cc` checks every operation's members against CRoaring's before it times
+  anything, and prints the CRoaring version.
 - `docset::detail::pick_extract_form`, the choice of extraction form by member count and
   loop limit, with `static_assert`s at both sides of each boundary in `test/diff.cc`, and
   extraction cases at the loop limit of each CPU path (31 to 33, 95 to 97) and of the
