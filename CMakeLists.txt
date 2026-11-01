@@ -22,6 +22,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(docset_diff PRIVATE docset)
   target_include_directories(docset_diff PRIVATE test)
   add_test(NAME docset_diff COMMAND docset_diff)
+  # The portable build (DOCSET_NO_SIMD) against the same reference.
+  add_executable(docset_diff_portable test/diff.cc)
+  target_link_libraries(docset_diff_portable PRIVATE docset)
+  target_include_directories(docset_diff_portable PRIVATE test)
+  target_compile_definitions(docset_diff_portable PRIVATE DOCSET_NO_SIMD)
+  add_test(NAME docset_diff_portable COMMAND docset_diff_portable)
   # The branch-free lower bound must compile to a conditional move (checked on x86-64 and arm64).
   add_test(NAME docset_codegen COMMAND ${CMAKE_COMMAND}
     -DCXX=${CMAKE_CXX_COMPILER} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/test/codegen_probe.cc

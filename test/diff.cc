@@ -44,7 +44,8 @@ static docs make(std::mt19937_64& rng, std::uint32_t universe) {
 // extraction routine per CPU feature and cardinality. Build two bitmap containers A = S + R1 and
 // B = S + R2 (R1, R2, S pairwise disjoint, both above array_max members) so that A & B is exactly S
 // and A - B is exactly R1, for S shaped to hit every extraction path: empty words, one to many bits
-// per word, full words, the chunk edges, and cardinalities from 1 through array_max + 1.
+// per word, full words, the chunk edges, and cardinalities from 0 through array_max + 1. An empty
+// result leaves no chunk.
 static docs shaped(std::mt19937_64& rng, int shape, std::uint32_t card) {
 	std::set<std::uint32_t> s;
 	switch (shape) {
@@ -79,7 +80,7 @@ static docs shaped(std::mt19937_64& rng, int shape, std::uint32_t card) {
 }
 
 static void extraction(std::mt19937_64& rng) {
-	static const std::uint32_t cards[] = {1, 2, 3, 5, 8, 63, 64, 65, 127, 500, 1000, 1023, 1024, 1025, 1536, 2047, 2048, 2049, 3000, 3071, 3072, 3073, 4000, 4095, 4096, 4097, 4200};
+	static const std::uint32_t cards[] = {0, 1, 2, 3, 5, 8, 63, 64, 65, 127, 500, 1000, 1023, 1024, 1025, 1536, 2047, 2048, 2049, 3000, 3071, 3072, 3073, 4000, 4094, 4095, 4096, 4097, 4098, 4200};
 	const std::uint32_t universe = 65536;
 	for (int rep = 0; rep < 3; ++rep) {
 		for (std::uint32_t card : cards) {
@@ -99,10 +100,12 @@ static void extraction(std::mt19937_64& rng) {
 				auto oa = docset_old::set::from_sorted(universe, va), ob = docset_old::set::from_sorted(universe, vb);
 				auto both = a & b;
 				CHECK(both.count() == s.size());
+				CHECK(both.chunks() == (s.empty() ? 0u : 1u));
 				CHECK(members(both) == s);
 				CHECK(members(oa & ob) == s);
 				auto diff = a - b;
 				CHECK(diff.count() == r1.size());
+				CHECK(diff.chunks() == 1);
 				CHECK(members(diff) == r1);
 				CHECK(members(oa - ob) == r1);
 				for (std::uint32_t p : {0u, 1u, 63u, 64u, 65535u}) { CHECK(both.test(p) == in_s.count(p)); }
@@ -111,9 +114,51 @@ static void extraction(std::mt19937_64& rng) {
 	}
 }
 
+// Intersections and differences whose result has exactly r members, r on both sides of array_max
+// (as the result, and as the operand B = full chunk - R) and at the empty and full chunk, in chunks
+// 0, 1 and 65535. A result above array_max members stays a bitmap and one at or below it is an
+// array; an empty result leaves no chunk. Both the bitmap-bitmap and the array-bitmap paths run.
+static void result_boundaries(std::mt19937_64& rng) {
+	static const std::uint32_t sizes[] = {0, 1, 2, 3, 4094, 4095, 4096, 4097, 4098, 61438, 61439, 61440, 61441, 61442, 65533, 65534, 65535, 65536};
+	const std::uint32_t universe = 0xffffffffu;
+	for (std::uint32_t key : {0u, 1u, 65535u}) {
+		const std::uint32_t base = key << 16;
+		docs all(65536);
+		for (std::uint32_t i = 0; i < 65536; ++i) { all[i] = base + i; }
+		auto full = docset::set::from_sorted(universe, all);
+		auto ofull = docset_old::set::from_sorted(universe, all);
+		for (std::uint32_t r : sizes) {
+			docs shuffled(all);
+			std::shuffle(shuffled.begin(), shuffled.end(), rng);
+			docs taken(shuffled.begin(), shuffled.begin() + r), rest(shuffled.begin() + r, shuffled.end());
+			std::sort(taken.begin(), taken.end());
+			std::sort(rest.begin(), rest.end());
+			auto t = docset::set::from_sorted(universe, taken), u = docset::set::from_sorted(universe, rest);
+			auto ot = docset_old::set::from_sorted(universe, taken), ou = docset_old::set::from_sorted(universe, rest);
+			auto expect = [&](const docset::set& got, const docset_old::set& old, const docs& want) {
+				CHECK(got.count() == want.size());
+				CHECK(got.chunks() == (want.empty() ? 0u : 1u));
+				CHECK(members(got) == want);
+				CHECK(members(old) == want);
+				for (std::uint32_t p : {base, base + 1, base + 65535, base - 1}) { CHECK(got.test(p) == std::binary_search(want.begin(), want.end(), p)); }
+				for (std::size_t k = 0; k < want.size(); k += 1 + want.size() / 16) { CHECK(got.test(want[k])); }
+			};
+			expect(full - u, ofull - ou, taken);   // R = taken, B = rest: bitmap or array
+			expect(full - t, ofull - ot, rest);    // R = rest, B = taken
+			expect(full & t, ofull & ot, taken);
+			expect(full & u, ofull & ou, rest);
+			expect(t - full, ot - ofull, {});
+			expect(u - u, ou - ou, {});
+			expect(t & u, ot & ou, {});
+			expect(t | u, ot | ou, all);
+		}
+	}
+}
+
 int main() {
 	std::mt19937_64 rng(2024);
 	extraction(rng);
+	result_boundaries(rng);
 	for (int iter = 0; iter < 60; ++iter) {
 		std::uint32_t universe = 65536 * (1 + rng() % 6) - (iter % 3 == 0 ? rng() % 60000 : 0);
 		docs va = make(rng, universe), vb = make(rng, universe);

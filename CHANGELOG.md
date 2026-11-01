@@ -4,6 +4,21 @@ Notable changes to docset, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); entries are dated because the
 library has no releases.
 
+## 2026-11-01
+
+### Added
+
+- Boundary tests. `test/diff.cc` takes bitmap AND and ANDNOT results of exactly 0, 4094 to
+  4098 and 65536 members, in the first, second and last chunk, and checks contents, count,
+  `chunks()` (an empty result leaves no chunk) and `test()` against the reference; its
+  extraction cases start at cardinality 0. `test/test.cc` freezes chunks of 1 to 65536
+  members in the same chunks and checks the container kind in the directory (array at 4096,
+  bitset at 4097 and 65535, full at 65536), then rank and membership at every ordinal in
+  and around the chunk. Each fails with the matching edit of `docset.hh`: an empty result
+  kept as a chunk, the array limit moved to 4095 or 4097, the full chunk moved to 65537, or
+  `open` refusing a 4096-member array.
+- `docset_diff_portable` runs `test/diff.cc` with `DOCSET_NO_SIMD`.
+
 ## 2026-10-31
 
 ### Changed

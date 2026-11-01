@@ -132,9 +132,13 @@ python3 bench/ab_compare.py build/docset_ab_old build/docset_ab_new
 The tests compare every operation with `std::set_*` across densities, universes
 that cross chunk boundaries, and mixed array/bitmap chunks; check iterators with
 interleaved `next()` and `advance()`; and drive the 16-bit SIMD kernels directly
-with heavy overlap at every small size and at both ends of the 16-bit range.
-`docset_portable_test` builds with `DOCSET_NO_SIMD`. `test/diff.cc` checks every
-operation against the reference implementation in `test/docset_old.hh`.
+with heavy overlap at every small size and at both ends of the 16-bit range;
+and freeze chunks of 1 to 65536 members in the first, second and last chunk, checking
+the container kind at 4096, 4097, 65535 and 65536 and rank and membership at every
+ordinal. `docset_portable_test` builds with `DOCSET_NO_SIMD`. `test/diff.cc` checks every
+operation against the reference implementation in `test/docset_old.hh`, including results
+of exactly 0, 4094 to 4098 and 65536 members (an empty result leaves no chunk);
+`docset_diff_portable` runs it with `DOCSET_NO_SIMD`.
 `docset_codegen` compiles the point-test lower bound to assembly and looks for a
 conditional move.
 

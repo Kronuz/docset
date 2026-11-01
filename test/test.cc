@@ -104,6 +104,71 @@ int main() {
 		CHECK(view && view->cardinality() == 0 && view->rank(123) == 0 && !view->contains(0));
 	}
 
+	// Frozen chunks at the container boundaries: 4096 members is an array, 4097 a bitset, 65535 a
+	// bitset and 65536 a full chunk. The kind is the third byte of the directory entry. Rank and
+	// membership are checked at every doc in and around the chunk, in chunks 0, 1 and 65535.
+	{
+		std::mt19937_64 rng(31);
+		const auto expected_kind = [](std::uint32_t n) { return n == 65536 ? 0 : n <= 4096 ? 1 : 2; };
+		for (docset::doc_t key : {0u, 1u, 65535u}) {
+			const docset::doc_t base = key << 16;
+			for (std::uint32_t n : {1u, 2u, 4095u, 4096u, 4097u, 4098u, 65534u, 65535u, 65536u}) {
+				std::vector<std::uint32_t> lows(65536);
+				for (std::uint32_t i = 0; i < 65536; ++i) { lows[i] = i; }
+				std::shuffle(lows.begin(), lows.end(), rng);
+				lows.resize(n);
+				std::sort(lows.begin(), lows.end());
+				std::vector<docset::doc_t> docs;
+				std::vector<bool> present(65536, false);
+				for (auto low : lows) { docs.push_back(base + low); present[low] = true; }
+				auto bytes = docset::freeze(docs.data(), docs.size());
+				const int kind = expected_kind(n);
+				CHECK(bytes.size() > 18 && bytes[18] == kind);
+				CHECK(bytes.size() == 16 + 24 + (kind == 0 ? 0 : kind == 1 ? 2 * n : 8 * 1024 + 2 * 128));
+				auto view = docset::frozen_view::open(bytes.data(), bytes.size());
+				CHECK(view && view->cardinality() == n);
+				if (!view) { continue; }
+				std::uint64_t below = 0;
+				for (std::int64_t k = -3; k < 65536 + 3; ++k) {
+					const std::int64_t doc = std::int64_t(base) + k;
+					if (doc < 0 || doc > 0xffffffffll) { continue; }
+					const bool in_chunk = k >= 0 && k < 65536;
+					CHECK(view->contains(docset::doc_t(doc)) == (in_chunk && present[std::size_t(k)]));
+					CHECK(view->rank(docset::doc_t(doc)) == (k < 0 ? 0 : below));
+					if (in_chunk && present[std::size_t(k)]) { ++below; }
+				}
+				CHECK(below == n);
+			}
+		}
+		// Chunks of each kind side by side: the ranks carry across them.
+		std::vector<docset::doc_t> docs;
+		const std::pair<docset::doc_t, std::uint32_t> chunks[] = {{0, 4096}, {1, 4097}, {2, 65536}, {3, 1}, {4, 65535}, {9, 4096}};
+		for (auto [key, n] : chunks) {
+			std::vector<std::uint32_t> lows(65536);
+			for (std::uint32_t i = 0; i < 65536; ++i) { lows[i] = i; }
+			std::shuffle(lows.begin(), lows.end(), rng);
+			lows.resize(n);
+			std::sort(lows.begin(), lows.end());
+			for (auto low : lows) { docs.push_back((key << 16) + low); }
+		}
+		auto bytes = docset::freeze(docs.data(), docs.size());
+		auto view = docset::frozen_view::open(bytes.data(), bytes.size());
+		CHECK(view && view->cardinality() == docs.size());
+		for (std::size_t c = 0; c < std::size(chunks) && view; ++c) {
+			CHECK(bytes[16 + 24 * c + 2] == expected_kind(chunks[c].second));
+		}
+		if (view) {
+			for (auto [key, n] : chunks) {
+				for (docset::doc_t doc : {(key << 16) - 2, (key << 16) - 1, key << 16, (key << 16) + 1, (key << 16) + 65534, (key << 16) + 65535, (key << 16) + 65536, (key << 16) + 65537}) {
+					const auto below = std::uint64_t(std::lower_bound(docs.begin(), docs.end(), doc) - docs.begin());
+					CHECK(view->rank(doc) == below);
+					CHECK(view->contains(doc) == std::binary_search(docs.begin(), docs.end(), doc));
+				}
+			}
+			CHECK(view->rank(0xffffffffu) == docs.size());
+		}
+	}
+
 	std::mt19937_64 rng(20261011);
 	for (doc_t universe : {1u, 63u, 64u, 65u, 1000u, 65536u, 65537u, 100003u, 300007u}) {
 		for (double da : {0.0, 1e-4, 1e-2, 0.03, 0.1, 0.5, 1.0}) {

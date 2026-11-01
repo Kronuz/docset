@@ -4,8 +4,8 @@
 
 ```
 docset.hh        bitset, sorted_set, chunked set, doc_iterator, SIMD kernels (SSE4.2/SSE4.1/SSSE3/AVX2/NEON).
-test/test.cc     Operations vs std::set_*, iterators, 16-bit kernels. Built twice: SIMD and DOCSET_NO_SIMD.
-test/diff.cc     Every operation against the reference test/docset_old.hh.
+test/test.cc     Operations vs std::set_*, iterators, 16-bit kernels, frozen sets at the container boundaries. Built twice: SIMD and DOCSET_NO_SIMD.
+test/diff.cc     Every operation against the reference test/docset_old.hh, with results of exactly 0 and around 4096 and 65536 members. Built twice, like test.cc.
 bench/bench.cc   Interleaved comparison against CRoaring (DOCSET_BENCH_REFERENCE).
 bench/cmp_bench.cc  AND, ANDNOT, and test() timings against test/docset_old.hh, with an A/A column.
 bench/ab_bench.cc   The same rows with one docset version per binary (docset_ab_new, docset_ab_old).
