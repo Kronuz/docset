@@ -10,6 +10,7 @@ bench/bench.cc   Interleaved comparison against CRoaring (DOCSET_BENCH_REFERENCE
 bench/cmp_bench.cc  AND, ANDNOT, and test() timings against test/docset_old.hh, with an A/A column.
 bench/ab_bench.cc   The same rows with one docset version per binary (docset_ab_new, docset_ab_old).
 bench/ab_compare.py Alternates two ab_bench binaries and prints old/new per row with an A/A column.
+bench/micro_extract.cc  Bitmap-to-array extraction: docset's routine against the loop, branch-free, byte-table and BMI1 variants it is chosen from.
 test/codegen_probe.cc, test/check_codegen.cmake  docset_codegen: lower_bound_index must compile to a conditional move.
 docs/docset.d2     README diagram; render: d2 --layout elk --sketch --theme 302 docs/docset.d2 docs/docset.svg
 ```

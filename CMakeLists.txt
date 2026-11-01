@@ -33,6 +33,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     -DCXX=${CMAKE_CXX_COMPILER} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/test/codegen_probe.cc
     -DINC=${CMAKE_CURRENT_SOURCE_DIR} -DARCH=${CMAKE_SYSTEM_PROCESSOR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_codegen.cmake)
+  # Bitmap-to-array extraction variants against docset's own routine.
+  add_executable(docset_micro_extract bench/micro_extract.cc)
+  target_link_libraries(docset_micro_extract PRIVATE docset)
   add_executable(docset_cmp_bench bench/cmp_bench.cc)
   target_link_libraries(docset_cmp_bench PRIVATE docset)
   target_include_directories(docset_cmp_bench PRIVATE test)

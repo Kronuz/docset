@@ -18,6 +18,9 @@ library has no releases.
   kept as a chunk, the array limit moved to 4095 or 4097, the full chunk moved to 65537, or
   `open` refusing a 4096-member array.
 - `docset_diff_portable` runs `test/diff.cc` with `DOCSET_NO_SIMD`.
+- `bench/micro_extract.cc` (`docset_micro_extract`) times the bitmap-to-array extraction
+  against the variants it is chosen from, over 256 bitmaps per density, after checking each
+  for identical output.
 
 ## 2026-10-31
 

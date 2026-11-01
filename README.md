@@ -120,6 +120,43 @@ per chunk); the conversion takes two or four bits per word without a branch, cho
 the result size, and on x86-64 uses BMI1 when the CPU has it. The array kernels are
 compiled for SSE4.2 or NEON. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
+### Bitmap-to-array extraction
+
+`build/docset_micro_extract [ROUNDS [DENSITIES]]` times the conversion above against the
+variants it is chosen from: the plain loop (one iteration per set bit), two or four bits per
+word without a branch, a byte table, and on x86-64 the BMI1 forms. Each timed pass cycles
+through 256 different bitmaps, so a branch predictor cannot memorize the data, and every
+variant is checked for identical output first. Median nanoseconds per 64Ki-bit bitmap over
+15 rounds, Apple clang 17 `-O3 -DNDEBUG`; `landed` is `docset::detail::extract_bits`, the
+routine the set operations call:
+
+Apple M4 Pro (arm64), two runs agree within 2%:
+
+| Members | landed | loop | two bits | four bits |
+|---:|---:|---:|---:|---:|
+| 131 | 590 | 969 | 567 | 1071 |
+| 655 | 790 | 3714 | 774 | 1083 |
+| 1311 | 1162 | 4730 | 1515 | 1160 |
+| 2621 | 2230 | 6086 | 6640 | 2241 |
+| 3932 | 5601 | 7021 | 9167 | 5640 |
+
+Intel Core i9-9980HK (x86-64, macOS 15), the second of two runs (they agree within 13%):
+
+| Members | landed | loop | BMI1 loop | BMI1 two bits | BMI1 four bits |
+|---:|---:|---:|---:|---:|---:|
+| 131 | 1439 | 1431 | 1307 | 1395 | 2442 |
+| 655 | 1685 | 4728 | 4597 | 1714 | 2603 |
+| 1311 | 2570 | 5978 | 5836 | 2689 | 2633 |
+| 2621 | 3734 | 7859 | 7166 | 6999 | 3757 |
+| 3932 | 6649 | 8818 | 7875 | 8686 | 6719 |
+
+From 655 members up `landed` is the fastest form or within 5% of it in both tables, and
+within 10% of it below. Under about 130 members on the i9 (65 members: 893 ns for the loop
+against 1457 for `landed`) and about 250 on a shared AMD EPYC 7763 VM the plain loop is faster
+than the branch-free forms; on the M4 `landed` is faster than the loop down to 65 members.
+gcc 16 on the i9 and clang 12 and gcc 11 on the EPYC order the forms alike: the BMI1
+branch-free forms lead from about 650 members up.
+
 ## 🛠️ Building and testing
 
 ```sh
@@ -127,6 +164,7 @@ cmake -S . -B build && cmake --build build && ctest --test-dir build
 build/docset_cmp_bench   # AND, ANDNOT, and test() against the reference test/docset_old.hh
 build/docset_ab_new      # the same rows and more, one docset version per binary:
 python3 bench/ab_compare.py build/docset_ab_old build/docset_ab_new
+build/docset_micro_extract   # bitmap-to-array extraction variants, ns per bitmap by density
 ```
 
 The tests compare every operation with `std::set_*` across densities, universes
