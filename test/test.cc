@@ -176,6 +176,76 @@ int main() {
 		CHECK(std::vector<std::uint16_t>(out.begin(), out.begin() + docset::detail::subtract16(x.data(), x.size(), y.data(), y.size(), out.data())) == want);
 	}
 
+	// Union, intersection and difference at every pair of sizes 0..40 over shaped inputs: runs that
+	// touch 0 and 65535, equal, disjoint either way round, nested, and interleaved, so block
+	// boundaries, repeated values across them, and the scalar tails are all hit.
+	{
+		auto run = [](std::size_t n, std::size_t first, std::size_t step) {
+			std::vector<std::uint16_t> v;
+			for (std::size_t i = 0; i < n; ++i) { v.push_back(std::uint16_t(first + i * step)); }
+			return v;
+		};
+		std::vector<std::uint16_t> out(100);
+		auto check = [&](const std::vector<std::uint16_t>& x, const std::vector<std::uint16_t>& y) {
+			std::vector<std::uint16_t> want;
+			std::set_union(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(want));
+			out.assign(x.size() + y.size() + 16, 0xaaaa);
+			CHECK(std::vector<std::uint16_t>(out.begin(), out.begin() + docset::detail::unite16(x.data(), x.size(), y.data(), y.size(), out.data())) == want);
+			want.clear();
+			std::set_difference(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(want));
+			CHECK(std::vector<std::uint16_t>(out.begin(), out.begin() + docset::detail::subtract16(x.data(), x.size(), y.data(), y.size(), out.data())) == want);
+			want.clear();
+			std::set_intersection(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(want));
+			CHECK(std::vector<std::uint16_t>(out.begin(), out.begin() + docset::detail::intersect16(x.data(), x.size(), y.data(), y.size(), out.data())) == want);
+		};
+		for (std::size_t na = 0; na <= 40; ++na) {
+			for (std::size_t nb = 0; nb <= 40; ++nb) {
+				check(run(na, 0, 1), run(nb, 0, 1));                        // nested prefixes, start at 0
+				check(run(na, 0, 2), run(nb, 1, 2));                        // interleaved, no common value
+				check(run(na, 0, 3), run(nb, 0, 2));                        // some common values
+				check(run(na, 0, 1), run(nb, 1000, 1));                     // a entirely below b
+				check(run(na, 1000, 1), run(nb, 0, 1));                     // b entirely below a
+				check(run(na, 65535 - na + 1, 1), run(nb, 65535 - nb + 1, 1));  // ends at 65535
+				check(run(na, 65535 - 2 * na + 1, 2), run(nb, 65535 - 2 * nb + 2, 2));  // interleaved at the top
+			}
+		}
+	}
+
+	// The branch-free lower bound against std::lower_bound for every probe value, at array sizes
+	// around each halving boundary, with arrays that include 0 and 65535.
+	for (std::size_t n : {0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 255, 256, 257, 300, 1000, 4095, 4096, 4097}) {
+		std::vector<std::uint16_t> v;
+		if (n) {
+			std::vector<bool> used(65536, false);
+			used[0] = true;
+			if (n > 1) { used[65535] = true; }
+			std::size_t have = std::size_t(used[0]) + std::size_t(n > 1);
+			while (have < n) {
+				std::size_t x = rng() % 65536;
+				if (!used[x]) { used[x] = true; ++have; }
+			}
+			for (std::size_t x = 0; x < 65536; ++x) { if (used[x]) { v.push_back(std::uint16_t(x)); } }
+		}
+		for (std::uint32_t x = 0; x < 65536; ++x) {
+			CHECK(docset::detail::lower_bound_index(v.data(), v.size(), std::uint16_t(x)) ==
+			      std::size_t(std::lower_bound(v.begin(), v.end(), std::uint16_t(x)) - v.begin()));
+		}
+	}
+
+	// Point test() on sets with many chunks and at the largest ordinal.
+	{
+		std::vector<doc_t> v;
+		for (std::uint32_t k = 0; k < 65536; ++k) { v.push_back((k << 16) | std::uint32_t(rng() % 65536)); }
+		auto s = docset::set::from_sorted(0xffffffffu, v);
+		for (doc_t d : v) {
+			CHECK(s.test(d));
+			CHECK(!s.test(d ^ 1u) || std::binary_search(v.begin(), v.end(), d ^ 1u));
+		}
+		CHECK(s.chunks() == 65536);
+		auto top = docset::set::from_sorted(0xffffffffu, {0u, 0xfffffffeu, 0xffffffffu});
+		CHECK(top.test(0) && top.test(0xfffffffeu) && top.test(0xffffffffu) && !top.test(1) && !top.test(0xfffffffdu));
+	}
+
 	// Dense chunks: arrays become bitmaps past 4096 members per 64Ki chunk and back.
 	{
 		auto va = random_docs(rng, 1u << 18, 0.3), vb = random_docs(rng, 1u << 18, 0.3);

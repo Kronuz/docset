@@ -418,23 +418,26 @@ __attribute__((target("ssse3,popcnt"))) inline std::size_t intersect16_ssse3(
 	}
 	return k + intersect16_scalar(a + i, na - i, b + j, nb - j, out + k);
 }
-// "Which lanes of a equal any lane of b" for 8×8 16-bit values in one instruction.
-// pcmpistrm (3 µops) treats a zero lane as the end of the string; in strictly
-// increasing arrays a zero can only be an array's first element, so callers pass
-// may_have_zero only for blocks that start an array, and those use pcmpestrm.
-__attribute__((target("sse4.2,popcnt"))) inline unsigned equal_any16(__m128i va, __m128i vb, bool may_have_zero) noexcept {
-	constexpr int mode = _SIDD_UWORD_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_BIT_MASK;
-	if (may_have_zero) { return unsigned(_mm_cvtsi128_si32(_mm_cmpestrm(vb, 8, va, 8, mode))) & 0xff; }
-	return unsigned(_mm_cvtsi128_si32(_mm_cmpistrm(vb, va, mode))) & 0xff;
+// "Which lanes of a equal any lane of b" for 8×8 16-bit values in one instruction, as a bit mask
+// in the low bits of the result. pcmpistrm (3 µops) treats a zero lane as the end of the string;
+// in strictly increasing arrays a zero can only be an array's first element, so the kernels
+// below peel it off first and never pass one.
+__attribute__((always_inline, target("sse4.2,popcnt"))) inline __m128i equal_any16(__m128i va, __m128i vb) noexcept {
+	return _mm_cmpistrm(vb, va, _SIDD_UWORD_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_BIT_MASK);
 }
 
 __attribute__((target("sse4.2,popcnt"))) inline std::size_t intersect16_sse42(
 	const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 	std::size_t i = 0, j = 0, k = 0;
+	if (na && nb && (a[0] == 0 || b[0] == 0)) {
+		if (a[0] == 0 && b[0] == 0) { out[k++] = 0; }
+		if (a[0] == 0) { ++a; --na; }
+		if (b[0] == 0) { ++b; --nb; }
+	}
 	while (i + 8 <= na && j + 8 <= nb) {
 		__m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
 		__m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + j));
-		unsigned mask = equal_any16(va, vb, (a[i] == 0) | (b[j] == 0));
+		unsigned mask = unsigned(_mm_cvtsi128_si32(equal_any16(va, vb))) & 0xff;
 		__m128i shuffle = _mm_loadu_si128(reinterpret_cast<const __m128i*>(compact16[mask].data()));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(out + k), _mm_shuffle_epi8(va, shuffle));
 		k += unsigned(std::popcount(mask));
@@ -523,15 +526,42 @@ inline std::size_t subtract16_scalar(const std::uint16_t* a, std::size_t na, con
 	return k + (na - i);
 }
 
+// Finishes a vector union. pending holds the eight sorted lanes of the last merge that are not
+// emitted yet (they may repeat); each of them and every value in the two unread rests is >=
+// last, the final value already written (out[k - 1]). The rests are the unread tails of the two
+// inputs, few being the one with fewer than 8 values, so the scratch stays on the stack.
+inline std::size_t unite16_finish(std::uint16_t* pending, const std::uint16_t* few, std::size_t nfew, const std::uint16_t* many,
+                                  std::size_t nmany, std::uint16_t* out, std::size_t k, std::uint16_t last) noexcept {
+	std::size_t np = 0;
+	for (std::size_t p = 0; p < 8; ++p) {
+		if (np == 0 || pending[p] != pending[np - 1]) { pending[np++] = pending[p]; }
+	}
+	std::uint16_t scratch[16];
+	const std::size_t ns = unite16_scalar(pending, np, few, nfew, scratch);
+	const std::size_t start = k;
+	k += unite16_scalar(scratch, ns, many, nmany, out + k);
+	if (k > start && out[start] == last) {
+		std::memmove(out + start, out + start + 1, (k - start - 1) * 2);
+		--k;
+	}
+	return k;
+}
+
 #if DOCSET_SSE
-// Sorts a bitonic 8-lane vector: half-cleaners at distances 4, 2, 1.
-__attribute__((target("sse4.1,popcnt"))) inline __m128i bitonic_sort8(__m128i x) noexcept {
-	__m128i y = _mm_shuffle_epi32(x, 0x4e);
-	x = _mm_blend_epi16(_mm_min_epu16(x, y), _mm_max_epu16(x, y), 0xf0);
-	y = _mm_shuffle_epi32(x, 0xb1);
-	x = _mm_blend_epi16(_mm_min_epu16(x, y), _mm_max_epu16(x, y), 0xcc);
-	y = _mm_shufflehi_epi16(_mm_shufflelo_epi16(x, 0xb1), 0xb1);
-	return _mm_blend_epi16(_mm_min_epu16(x, y), _mm_max_epu16(x, y), 0xaa);
+// Merges two ascending 8-lane vectors: lo gets the eight smallest values and hi the eight
+// largest, each ascending. Reversing b makes the pair bitonic; four rounds of min/max followed
+// by interleaving the minima with the maxima (a perfect shuffle) sort it, with fewer
+// instructions than a min/max stage plus a half-cleaner sort of each half.
+__attribute__((always_inline, target("sse4.1,popcnt"))) inline void merge8(__m128i a, __m128i b, __m128i& lo, __m128i& hi) noexcept {
+	const __m128i reverse = _mm_setr_epi8(14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
+	__m128i x = a, y = _mm_shuffle_epi8(b, reverse);
+	for (int round = 0; round < 4; ++round) {
+		const __m128i mn = _mm_min_epu16(x, y), mx = _mm_max_epu16(x, y);
+		x = _mm_unpacklo_epi16(mn, mx);
+		y = _mm_unpackhi_epi16(mn, mx);
+	}
+	lo = x;
+	hi = y;
 }
 
 // Vectorized merge (Inoue and Taura): merge two sorted 8-vectors, emit the lower 8 with
@@ -539,7 +569,6 @@ __attribute__((target("sse4.1,popcnt"))) inline __m128i bitonic_sort8(__m128i x)
 __attribute__((target("sse4.1,popcnt"))) inline std::size_t unite16_sse41(
 	const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 	if (na < 8 || nb < 8) { return unite16_scalar(a, na, b, nb, out); }
-	const __m128i reverse = _mm_setr_epi8(14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1);
 	const __m128i zero = _mm_setzero_si128();
 	__m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a));
 	__m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b));
@@ -547,9 +576,8 @@ __attribute__((target("sse4.1,popcnt"))) inline std::size_t unite16_sse41(
 	__m128i last = zero;
 	bool first = true;
 	for (;;) {
-		__m128i r = _mm_shuffle_epi8(vb, reverse);
-		__m128i lo = bitonic_sort8(_mm_min_epu16(va, r));
-		__m128i hi = bitonic_sort8(_mm_max_epu16(va, r));
+		__m128i lo, hi;
+		merge8(va, vb, lo, hi);
 		__m128i prev = _mm_alignr_epi8(lo, last, 14);  // [last[7], lo[0..6]]
 		unsigned dup = unsigned(_mm_movemask_epi8(_mm_packs_epi16(_mm_cmpeq_epi16(lo, prev), zero)));
 		if (first) { dup &= ~1u; first = false; }
@@ -559,8 +587,35 @@ __attribute__((target("sse4.1,popcnt"))) inline std::size_t unite16_sse41(
 		k += unsigned(std::popcount(keep));
 		last = lo;
 		vb = hi;
-		bool take_a = i < na && (j >= nb || a[i] <= b[j]);
-		if (take_a ? i + 8 > na : j + 8 > nb) { break; }
+#if defined(__clang__)
+		// The next block comes from the input whose head is smaller, picked with selects: which one
+		// that is behaves like a coin flip, and LLVM keeps these as conditional moves. GCC schedules
+		// the same selects slower than the branch below. An input past its end reads as 0x10000,
+		// larger than any value, and the clamped index keeps the read in bounds.
+		const std::uint32_t av = i < na ? std::uint32_t(a[i < na ? i : na - 1]) : 0x10000u;
+		const std::uint32_t bv = j < nb ? std::uint32_t(b[j < nb ? j : nb - 1]) : 0x10000u;
+		const bool take_a = av <= bv;
+		if ((take_a ? na - i : nb - j) < 8) {
+			alignas(16) std::uint16_t pending[8];
+			_mm_store_si128(reinterpret_cast<__m128i*>(pending), vb);
+			const std::uint16_t emitted = std::uint16_t(_mm_extract_epi16(last, 7));
+			return take_a ? unite16_finish(pending, a + i, na - i, b + j, nb - j, out, k, emitted)
+			              : unite16_finish(pending, b + j, nb - j, a + i, na - i, out, k, emitted);
+		}
+		va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(take_a ? a + i : b + j));
+		i += take_a ? 8 : 0;
+		j += take_a ? 0 : 8;
+	}
+}
+#else
+		const bool take_a = i < na && (j >= nb || a[i] <= b[j]);
+		if (take_a ? i + 8 > na : j + 8 > nb) {
+			alignas(16) std::uint16_t pending[8];
+			_mm_store_si128(reinterpret_cast<__m128i*>(pending), vb);
+			const std::uint16_t emitted = std::uint16_t(_mm_extract_epi16(last, 7));
+			return take_a ? unite16_finish(pending, a + i, na - i, b + j, nb - j, out, k, emitted)
+			              : unite16_finish(pending, b + j, nb - j, a + i, na - i, out, k, emitted);
+		}
 		if (take_a) {
 			va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
 			i += 8;
@@ -569,23 +624,58 @@ __attribute__((target("sse4.1,popcnt"))) inline std::size_t unite16_sse41(
 			j += 8;
 		}
 	}
-	// Tail: the pending upper vector plus whatever remains of each list, all >= the last emission.
-	alignas(16) std::uint16_t pending[8];
-	_mm_store_si128(reinterpret_cast<__m128i*>(pending), vb);
-	std::size_t np = 0;
-	for (std::size_t p = 0; p < 8; ++p) {
-		if (np == 0 || pending[p] != pending[np - 1]) { pending[np++] = pending[p]; }
+}
+#endif
+#elif DOCSET_NEON
+// Merges two ascending 8-lane vectors as in merge8 for SSE: lo gets the eight smallest values
+// and hi the eight largest, each ascending; four rounds of min/max and a perfect shuffle (zip).
+inline void merge8(uint16x8_t a, uint16x8_t b, uint16x8_t& lo, uint16x8_t& hi) noexcept {
+	uint16x8_t x = a, y = vrev64q_u16(b);
+	y = vextq_u16(y, y, 4);
+	for (int round = 0; round < 4; ++round) {
+		const uint16x8_t mn = vminq_u16(x, y), mx = vmaxq_u16(x, y);
+		x = vzip1q_u16(mn, mx);
+		y = vzip2q_u16(mn, mx);
 	}
-	std::uint16_t emitted = std::uint16_t(_mm_extract_epi16(last, 7));
-	std::vector<std::uint16_t> scratch(np + (na - i));
-	std::size_t ns = unite16_scalar(pending, np, a + i, na - i, scratch.data());
-	std::size_t start = k;
-	k += unite16_scalar(scratch.data(), ns, b + j, nb - j, out + k);
-	if (k > start && out[start] == emitted) {
-		std::memmove(out + start, out + start + 1, (k - start - 1) * 2);
-		--k;
+	lo = x;
+	hi = y;
+}
+
+// Vectorized merge as in unite16_sse41: merge two sorted 8-vectors, emit the lower 8 with
+// duplicates removed, and refill from the input whose next value is smaller. The choice is a
+// select, not a branch: which input is next is a coin flip.
+inline std::size_t unite16_neon(const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
+	if (na < 8 || nb < 8) { return unite16_scalar(a, na, b, nb, out); }
+	static constexpr std::uint16_t lane_bits[8] = {1, 2, 4, 8, 16, 32, 64, 128};
+	const uint16x8_t bits = vld1q_u16(lane_bits);
+	uint16x8_t va = vld1q_u16(a), vb = vld1q_u16(b), last = vdupq_n_u16(0);
+	std::size_t i = 8, j = 8, k = 0;
+	unsigned first = ~1u;  // lane 0 of the first emission has no predecessor to repeat
+	for (;;) {
+		uint16x8_t lo, hi;
+		merge8(va, vb, lo, hi);
+		const uint16x8_t same = vceqq_u16(lo, vextq_u16(last, lo, 7));
+		const unsigned keep = ~(unsigned(vaddvq_u16(vandq_u16(same, bits))) & first) & 0xff;
+		first = ~0u;
+		vst1q_u8(reinterpret_cast<std::uint8_t*>(out + k), vqtbl1q_u8(vreinterpretq_u8_u16(lo), vld1q_u8(compact16[keep].data())));
+		k += unsigned(std::popcount(keep));
+		last = lo;
+		vb = hi;
+		// An input past its end reads as 0x10000, larger than any value; the clamped index keeps the read in bounds.
+		const std::uint32_t av = i < na ? std::uint32_t(a[i < na ? i : na - 1]) : 0x10000u;
+		const std::uint32_t bv = j < nb ? std::uint32_t(b[j < nb ? j : nb - 1]) : 0x10000u;
+		const bool take_a = av <= bv;
+		if ((take_a ? na - i : nb - j) < 8) {
+			alignas(16) std::uint16_t pending[8];
+			vst1q_u16(pending, vb);
+			const std::uint16_t emitted = vgetq_lane_u16(last, 7);
+			return take_a ? unite16_finish(pending, a + i, na - i, b + j, nb - j, out, k, emitted)
+			              : unite16_finish(pending, b + j, nb - j, a + i, na - i, out, k, emitted);
+		}
+		va = vld1q_u16(take_a ? a + i : b + j);
+		i += take_a ? 8 : 0;
+		j += take_a ? 0 : 8;
 	}
-	return k;
 }
 #endif
 
@@ -596,8 +686,14 @@ __attribute__((target("sse4.1,popcnt"))) inline std::size_t unite16_sse41(
 __attribute__((target("sse4.2,popcnt"))) inline std::size_t subtract16_sse42(
 	const std::uint16_t* a, std::size_t na, const std::uint16_t* b, std::size_t nb, std::uint16_t* out) noexcept {
 	std::size_t i = 0, j = 0, k = 0;
-	auto emit = [&](__m128i va, unsigned matched) __attribute__((target("sse4.2,popcnt"))) {
-		unsigned keep = ~matched & 0xff;
+	if (na && nb && (a[0] == 0 || b[0] == 0)) {
+		if (a[0] == 0 && b[0] != 0) { out[k++] = 0; }
+		if (a[0] == 0) { ++a; --na; }
+		if (b[0] == 0) { ++b; --nb; }
+	}
+	// Stores the lanes of va that are not in found at out + k and advances k past them.
+	auto emit = [&](__m128i va, unsigned found) __attribute__((always_inline, target("sse4.2,popcnt"))) {
+		unsigned keep = ~found & 0xff;
 		__m128i shuffle = _mm_loadu_si128(reinterpret_cast<const __m128i*>(compact16[keep].data()));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(out + k), _mm_shuffle_epi8(va, shuffle));
 		k += unsigned(std::popcount(keep));
@@ -605,13 +701,13 @@ __attribute__((target("sse4.2,popcnt"))) inline std::size_t subtract16_sse42(
 	if (na >= 8 && nb >= 8) {
 		__m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a));
 		__m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b));
-		unsigned matched = 0;
+		__m128i matched = _mm_setzero_si128();  // lanes of va found in b so far, in the low bits
 		for (;;) {
-			matched |= equal_any16(va, vb, (a[i] == 0) | (b[j] == 0));
+			matched = _mm_or_si128(matched, equal_any16(va, vb));
 			const std::uint16_t amax = a[i + 7], bmax = b[j + 7];
 			if (amax <= bmax) {
-				emit(va, matched);
-				matched = 0;
+				emit(va, unsigned(_mm_cvtsi128_si32(matched)) & 0xff);
+				matched = _mm_setzero_si128();
 				i += 8;
 				if (i + 8 > na) { break; }
 				va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
@@ -621,8 +717,11 @@ __attribute__((target("sse4.2,popcnt"))) inline std::size_t subtract16_sse42(
 				if (j + 8 > nb) {
 					// b has fewer than 8 left: finish the current a block against them one by one.
 					// a may have moved to its next block in this same step, so bound by the current block.
-					for (const std::uint16_t top = a[i + 7]; j < nb && b[j] <= top; ++j) { matched |= equal_any16(va, _mm_set1_epi16(short(b[j])), true); }
-					emit(va, matched);
+					unsigned found = unsigned(_mm_cvtsi128_si32(matched)) & 0xff;
+					for (const std::uint16_t top = a[i + 7]; j < nb && b[j] <= top; ++j) {
+						found |= unsigned(_mm_cvtsi128_si32(equal_any16(va, _mm_set1_epi16(short(b[j]))))) & 0xff;
+					}
+					emit(va, found);
 					i += 8;
 					break;
 				}
@@ -638,11 +737,12 @@ inline std::size_t subtract16_neon(const std::uint16_t* a, std::size_t na, const
 	static constexpr std::uint16_t lane_bits[8] = {1, 2, 4, 8, 16, 32, 64, 128};
 	const uint16x8_t bits = vld1q_u16(lane_bits);
 	for (; i + 8 <= na; i += 8) {
-		uint16x8_t va = vld1q_u16(a + i);
-		std::uint16_t lo = a[i], hi = a[i + 7];
-		while (j < nb && b[j] < lo) { ++j; }
+		const uint16x8_t va = vld1q_u16(a + i);
+		const std::uint16_t hi = a[i + 7];
+		// Every b value up to the block's last lane is compared against the block, including the
+		// few below its first lane (they match nothing): one loop exit per block, not two.
 		uint16x8_t hit = vdupq_n_u16(0);
-		for (; j < nb && b[j] <= hi; ++j) { hit = vorrq_u16(hit, vceqq_u16(va, vdupq_n_u16(b[j]))); }
+		for (; j < nb && b[j] <= hi; ++j) { hit = vorrq_u16(hit, vceqq_u16(va, vld1q_dup_u16(b + j))); }
 		unsigned keep = ~unsigned(vaddvq_u16(vandq_u16(hit, bits))) & 0xff;
 		vst1q_u8(reinterpret_cast<std::uint8_t*>(out + k), vqtbl1q_u8(vreinterpretq_u8_u16(va), vld1q_u8(compact16[keep].data())));
 		k += unsigned(std::popcount(keep));
@@ -656,6 +756,8 @@ inline std::size_t unite16(const std::uint16_t* a, std::size_t na, const std::ui
 #if DOCSET_SSE
 	static const bool sse41 = __builtin_cpu_supports("sse4.1") && __builtin_cpu_supports("popcnt");
 	if (sse41) { return unite16_sse41(a, na, b, nb, out); }
+#elif DOCSET_NEON
+	return unite16_neon(a, na, b, nb, out);
 #endif
 	return unite16_scalar(a, na, b, nb, out);
 }
@@ -688,20 +790,32 @@ inline constexpr std::size_t chunk_bits = 1u << 16;
 inline constexpr std::size_t bitmap_words = chunk_bits / 64;
 inline constexpr std::uint32_t array_max = 4096;  // 4096 × 2 bytes = one 8 KiB bitmap
 
+// LLVM turns a select on a loaded value into a branch on x86-64 unless told the condition is
+// unpredictable; the hint keeps the conditional move.
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_unpredictable)
+#define DOCSET_UNPREDICTABLE(c) __builtin_unpredictable(c)
+#endif
+#endif
+#ifndef DOCSET_UNPREDICTABLE
+#define DOCSET_UNPREDICTABLE(c) (c)
+#endif
+
 // Index of the first element >= x among n ascending values, without a data-dependent
-// branch (the compiler emits a conditional select), which beats std::lower_bound on the
-// small arrays here because the comparisons are unpredictable.
+// branch (a conditional select), which beats std::lower_bound on the small arrays here
+// because the comparisons are unpredictable.
 template <typename T>
 inline std::size_t lower_bound_index(const T* a, std::size_t n, T x) noexcept {
 	if (!n) { return 0; }
 	const T* base = a;
 	for (std::size_t len = n; len > 1;) {
 		const std::size_t half = len / 2;
-		base = base[half] < x ? base + half : base;
+		base = DOCSET_UNPREDICTABLE(base[half] < x) ? base + half : base;
 		len -= half;
 	}
 	return std::size_t(base - a) + (*base < x);
 }
+#undef DOCSET_UNPREDICTABLE
 
 template <typename Op>
 inline std::uint32_t combine_words_generic(const std::uint64_t* x, const std::uint64_t* y, std::uint64_t* z, Op op) noexcept {

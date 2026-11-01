@@ -22,9 +22,21 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(docset_diff PRIVATE docset)
   target_include_directories(docset_diff PRIVATE test)
   add_test(NAME docset_diff COMMAND docset_diff)
+  # The branch-free lower bound must compile to a conditional move (checked on x86-64 and arm64).
+  add_test(NAME docset_codegen COMMAND ${CMAKE_COMMAND}
+    -DCXX=${CMAKE_CXX_COMPILER} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/test/codegen_probe.cc
+    -DINC=${CMAKE_CURRENT_SOURCE_DIR} -DARCH=${CMAKE_SYSTEM_PROCESSOR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_codegen.cmake)
   add_executable(docset_cmp_bench bench/cmp_bench.cc)
   target_link_libraries(docset_cmp_bench PRIVATE docset)
   target_include_directories(docset_cmp_bench PRIVATE test)
+  # The same rows against the reference, one version per binary: bench/ab_compare.py.
+  add_executable(docset_ab_new bench/ab_bench.cc)
+  target_link_libraries(docset_ab_new PRIVATE docset)
+  add_executable(docset_ab_old bench/ab_bench.cc)
+  target_link_libraries(docset_ab_old PRIVATE docset)
+  target_include_directories(docset_ab_old PRIVATE test)
+  target_compile_definitions(docset_ab_old PRIVATE DOCSET_AB_OLD)
 
   option(DOCSET_BENCH_REFERENCE "Fetch CRoaring as a benchmark-only reference" OFF)
   # libFuzzer target (Clang): cmake -DDOCSET_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
@@ -44,7 +56,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(ROARING_BUILD_STATIC ON CACHE BOOL "" FORCE)
     FetchContent_Declare(croaring
       GIT_REPOSITORY https://github.com/RoaringBitmap/CRoaring.git
-      GIT_TAG        f2b1a55bcfa49ec986539b05b603e26a3adcc95c)  # v5.2.3, the version the README numbers use
+      GIT_TAG        db0d1e9ae84041b64fa068891db5ca5f80773e1b)  # v5.4.0, the version the README numbers use
     FetchContent_MakeAvailable(croaring)
     target_link_libraries(docset_bench PRIVATE roaring)
     target_compile_definitions(docset_bench PRIVATE DOCSET_BENCH_REFERENCE=1)

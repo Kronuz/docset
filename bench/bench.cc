@@ -50,37 +50,54 @@ int main() {
 	volatile std::uint64_t sink = 0;
 	std::printf("%9s %8s %12s %12s %7s\n", "density", "op", "docset ns", "roaring ns", "ratio");
 	for (double density : {1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1, 0.5}) {
+		// Each timed operation takes the next of several random input pairs: repeating one input
+		// lets a branch predictor memorize the outcomes of the data-dependent branches in the
+		// sparse kernels, which the same sets would not allow in a real index.
+		const std::size_t copies = density < 0.07 ? 8 : 2;
 		auto make = [&] {
 			std::vector<doc_t> v;
 			std::geometric_distribution<doc_t> gap(density);
 			for (std::uint64_t d = gap(rng); d < universe; d += 1 + gap(rng)) { v.push_back(doc_t(d)); }
 			return v;
 		};
-		auto va = make(), vb = make();
-		auto a = docset::set::from_sorted(universe, va), b = docset::set::from_sorted(universe, vb);
-		auto ours_and = [&] { sink = sink + (a & b).count(); };
-		auto ours_or = [&] { sink = sink + (a | b).count(); };
-		auto ours_andnot = [&] { sink = sink + (a - b).count(); };
-		auto ours_iterate = [&] { std::uint64_t s = 0; a.for_each([&](doc_t d) { s += d; }); sink = sink + s; };
-		auto ours_count = [&] { sink = sink + a.count(); };
+		std::vector<std::vector<doc_t>> va(copies), vb(copies);
+		std::vector<docset::set> a(copies), b(copies);
+		for (std::size_t c = 0; c < copies; ++c) {
+			va[c] = make();
+			vb[c] = make();
+			a[c] = docset::set::from_sorted(universe, va[c]);
+			b[c] = docset::set::from_sorted(universe, vb[c]);
+		}
+		std::size_t turn = 0;
+		auto ours_and = [&] { const std::size_t t = turn++ % copies; sink = sink + (a[t] & b[t]).count(); };
+		auto ours_or = [&] { const std::size_t t = turn++ % copies; sink = sink + (a[t] | b[t]).count(); };
+		auto ours_andnot = [&] { const std::size_t t = turn++ % copies; sink = sink + (a[t] - b[t]).count(); };
+		auto ours_iterate = [&] { std::uint64_t s = 0; a[0].for_each([&](doc_t d) { s += d; }); sink = sink + s; };
+		auto ours_count = [&] { sink = sink + a[0].count(); };
 #if DOCSET_BENCH_REFERENCE
-		roaring_bitmap_t* ra = roaring_bitmap_of_ptr(va.size(), va.data());
-		roaring_bitmap_t* rb = roaring_bitmap_of_ptr(vb.size(), vb.data());
+		std::vector<roaring_bitmap_t*> ra(copies), rb(copies);
+		for (std::size_t c = 0; c < copies; ++c) {
+			ra[c] = roaring_bitmap_of_ptr(va[c].size(), va[c].data());
+			rb[c] = roaring_bitmap_of_ptr(vb[c].size(), vb[c].data());
+		}
+		std::size_t their_turn = 0;
 		auto row = [&](const char* name, auto&& ours, auto&& theirs) {
 			auto [x, y, ratio] = compare(ours, theirs);
 			std::printf("%9g %8s %12.0f %12.0f %7.2f\n", density, name, x, y, ratio);
 		};
-		row("and", ours_and, [&] { auto* r = roaring_bitmap_and(ra, rb); sink = sink + roaring_bitmap_get_cardinality(r); roaring_bitmap_free(r); });
-		row("or", ours_or, [&] { auto* r = roaring_bitmap_or(ra, rb); sink = sink + roaring_bitmap_get_cardinality(r); roaring_bitmap_free(r); });
-		row("andnot", ours_andnot, [&] { auto* r = roaring_bitmap_andnot(ra, rb); sink = sink + roaring_bitmap_get_cardinality(r); roaring_bitmap_free(r); });
+		row("and", ours_and, [&] { const std::size_t t = their_turn++ % copies; auto* r = roaring_bitmap_and(ra[t], rb[t]); sink = sink + roaring_bitmap_get_cardinality(r); roaring_bitmap_free(r); });
+		row("or", ours_or, [&] { const std::size_t t = their_turn++ % copies; auto* r = roaring_bitmap_or(ra[t], rb[t]); sink = sink + roaring_bitmap_get_cardinality(r); roaring_bitmap_free(r); });
+		row("andnot", ours_andnot, [&] { const std::size_t t = their_turn++ % copies; auto* r = roaring_bitmap_andnot(ra[t], rb[t]); sink = sink + roaring_bitmap_get_cardinality(r); roaring_bitmap_free(r); });
 		row("iterate", ours_iterate, [&] {
 			std::uint64_t s = 0;
-			roaring_iterate(ra, [](std::uint32_t v, void* p) { *static_cast<std::uint64_t*>(p) += v; return true; }, &s);
+			roaring_iterate(ra[0], [](std::uint32_t v, void* p) { *static_cast<std::uint64_t*>(p) += v; return true; }, &s);
 			sink = sink + s;
 		});
-		row("count", ours_count, [&] { sink = sink + roaring_bitmap_get_cardinality(ra); });
-		roaring_bitmap_free(ra);
-		roaring_bitmap_free(rb);
+		row("count", ours_count, [&] { sink = sink + roaring_bitmap_get_cardinality(ra[0]); });
+		for (std::size_t c = 0; c < copies; ++c) {
+			roaring_bitmap_free(ra[c]);
+			roaring_bitmap_free(rb[c]);
+		}
 #else
 		std::printf("%9g %8s %12.0f\n", density, "and", ns_per_op(ours_and));
 		std::printf("%9g %8s %12.0f\n", density, "or", ns_per_op(ours_or));
