@@ -97,11 +97,15 @@ Not for:
 
 ## ⚡ Performance
 
-`bench/bench.cc` times `docset::set` against CRoaring 5.4.0 (`db0d1e9`) on random
-sets over 2^24 ids, each operation producing a new set. Each cell is docset time
-over CRoaring time, the median of per-trial ratios with the two libraries
-alternating, so below 1 means docset is faster. Apple clang 17, `-O3 -DNDEBUG`,
-mean of two runs on the M4 Pro and three on the i9:
+`bench/bench.cc` times `docset::set` against [CRoaring](https://github.com/RoaringBitmap/CRoaring)
+[5.4.0](https://github.com/RoaringBitmap/CRoaring/releases/tag/v5.4.0) (`db0d1e9`, fetched by the
+benchmark only) on random sets over 2^24 ids. The rows are the density of each set (members per
+id); the cells are the cost of building a new set with AND (intersection), OR (union) and ANDNOT
+(`a` without `b`), as docset time over CRoaring time, the median of per-trial ratios with the two
+libraries alternating, so a cell below 1 means docset is faster. Before timing, the benchmark
+checks that every result has CRoaring's members, in the same order. Apple clang 17, `-O3
+-DNDEBUG`, mean of two runs on the M4 Pro (macOS 26, arm64) and three on the i9-9980HK (macOS 15,
+x86-64):
 
 | Density | Apple M4 Pro: AND / OR / ANDNOT | Intel Core i9-9980HK: AND / OR / ANDNOT |
 |---:|---:|---:|
