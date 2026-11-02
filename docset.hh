@@ -866,10 +866,17 @@ inline std::uint32_t combine_words(const std::uint64_t* x, const std::uint64_t* 
 #define DOCSET_EXTRACT_FN
 #endif
 
+#if defined(__clang__) && __has_cpp_attribute(clang::code_align)
+#define DOCSET_CODE_ALIGN_32 [[clang::code_align(32)]]
+#else
+#define DOCSET_CODE_ALIGN_32
+#endif
+
 // One loop iteration per set bit. The exit branch of the inner loop is taken about once per
 // word, and mispredicts when the bits per word vary (a result near 1 bit per word).
 DOCSET_EXTRACT_FN inline void extract_loop(const std::uint64_t* words, std::uint16_t* out) noexcept {
 	std::size_t k = 0;
+	DOCSET_CODE_ALIGN_32
 	for (std::size_t i = 0; i < bitmap_words; ++i) {
 		for (std::uint64_t w = words[i]; w; w &= w - 1) { out[k++] = std::uint16_t(i * 64 + unsigned(std::countr_zero(w))); }
 	}
