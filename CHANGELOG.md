@@ -60,7 +60,7 @@ library has no releases.
   which no code of this change touches, 0.92. So the x86-64 code keeps what was measured (its
   assembly is identical to the code before), and a build of the repository can still land in the
   slow position. The prototype that places the loop on purpose (functions aligned to 64 bytes)
-  is on branch `perf/docset-x86-align64`; it is not timed.
+  is a patch in issue #1; it is not timed.
 
 ### Changed
 
