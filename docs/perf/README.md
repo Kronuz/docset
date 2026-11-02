@@ -52,7 +52,7 @@ x86-64 CPUs with AVX-512, CRoaring also has AVX-512 array kernels that docset do
 ## Bitmap-to-array extraction
 
 A bitmap AND or ANDNOT whose result has at most 4096 members converts to an array (an AND of two
-density-0.1 sets produces about 650 members per chunk). Up to 96 members on x86-64 and 32 on
+density-0.1 sets produces about 650 members per chunk). Up to 96 members on x86-64 and 80 on
 arm64 the conversion is a plain loop over the set bits; above that it takes two or four bits per
 word without a branch, chosen by the result size. On x86-64 the branch-free forms use BMI1, and a
 CPU without BMI1 keeps the loop.
@@ -92,7 +92,8 @@ Intel Core i9-9980HK (x86-64, macOS 15), the runs agree within 10%:
 `landed` is the fastest form or within 5% of it in every row. The branch-free forms cost the same
 for any result (1450 ns on the i9, 560 on the M4 for two bits per word), while the loop costs 5
 to 9 ns per member below 200 members, so the loop wins below about 130 members on the i9 and 40
-on the M4 under Apple clang; `landed` takes it up to 96 and 32. Other compilers move the
+on the M4 under Apple clang; `landed` takes it up to 96 and 80, because the end-to-end rows of
+`bench/ab_bench.cc` (the bitmap the loop reads was just written) put the crossover higher on the M4. Other compilers move the
 crossover: gcc 16 on the i9 to 99 members (its loop is 2.5x slower on an empty bitmap), gcc 16
 and LLVM 23 on the M4 to 43, LLVM 23 on the i9 to 135. On a shared AMD EPYC 7763 VM under gcc 11
 the loop wins up to about 195 members (131 members: 1520 ns against 1960), so results of 97 to

@@ -94,6 +94,27 @@ static_assert(dd::pick_extract_form(dd::extract_two_max + 1, 96) == dd::extract_
 static_assert(dd::pick_extract_form(dd::array_max, 96) == dd::extract_form::four);
 static_assert(dd::extract_loop_max < dd::extract_two_max);
 
+// The limits are measured values (bench/ab_bench.cc rows of 20 to 400 members, docs/perf/README.md): a change
+// to one is a change to what the sets take at those sizes, so it is made here too.
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+static_assert(dd::extract_loop_max == 96);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+static_assert(dd::extract_loop_max == 80);
+#endif
+
+// The room extraction needs: on arm64 the plain loop writes the members and nothing else, so a result it
+// serves takes exactly its members; a branch-free form writes two entries past the last. x86-64 takes the
+// two for every size.
+#if defined(__aarch64__) || defined(_M_ARM64)
+static_assert(dd::extract_room(0) == 0);
+static_assert(dd::extract_room(dd::extract_loop_max) == dd::extract_loop_max);
+static_assert(dd::extract_room(dd::extract_loop_max + 1) == dd::extract_loop_max + 3);
+#else
+static_assert(dd::extract_room(0) == 2);
+static_assert(dd::extract_room(dd::extract_loop_max) == dd::extract_loop_max + 2);
+#endif
+static_assert(dd::extract_room(dd::array_max) == dd::array_max + 2);
+
 static void extraction(std::mt19937_64& rng) {
 	// Sizes on both sides of each limit of extract_bits: the loop limit of every CPU path (32 on arm64,
 	// 96 on x86-64) and of the build, the end of the two-bit form, and the largest array.
@@ -131,6 +152,90 @@ static void extraction(std::mt19937_64& rng) {
 				for (std::uint32_t p : {0u, 1u, 63u, 64u, 65535u}) { CHECK(both.test(p) == in_s.count(p)); }
 			}
 		}
+	}
+}
+
+// The conversion of a bitmap result to an array (container::from_bitmap) and each extraction form on its own,
+// at every cardinality from 0 through 320 (the sizes at and around the plain loop's limit on every CPU) and
+// at a stride above it, up to array_max + 1 (which stays a bitmap), against the sorted positions that were set.
+// The plain loop writes exactly card entries, so its buffer has no padding for the sanitizers to forgive; the
+// branch-free forms get the two entries of padding they write past the end.
+static void conversion_every_size(std::mt19937_64& rng) {
+	std::vector<std::uint32_t> cards;
+	for (std::uint32_t c = 0; c <= 320; ++c) { cards.push_back(c); }
+	for (std::uint32_t c = 321; c <= dd::array_max + 1; c += 7) { cards.push_back(c); }
+	for (std::uint32_t c : {1023u, 1024u, 1025u, 2047u, 2048u, 2049u, dd::array_max - 1, dd::array_max, dd::array_max + 1}) { cards.push_back(c); }
+	for (std::uint32_t card : cards) {
+		for (int shape = 0; shape < 5; ++shape) {
+			const docs pos = shaped(rng, shape, card);
+			std::vector<std::uint16_t> want(pos.begin(), pos.end());
+			dd::buffer<std::uint64_t> words(dd::bitmap_words);
+			std::fill(words.begin(), words.end(), 0);
+			for (auto p : pos) { words[p >> 6] |= std::uint64_t(1) << (p & 63); }
+
+			if (card <= dd::array_max) {
+				auto c = dd::container::from_bitmap(words, card);
+				CHECK(!c.is_bitmap());
+				CHECK(c.card == card);
+				CHECK(c.array.size() == card);
+				CHECK(std::equal(c.array.begin(), c.array.end(), want.begin(), want.end()));
+				// A result that needs no room past its members holds exactly its members: no padding is allocated for it.
+				if (dd::extract_room(card) == card) { CHECK(c.array.capacity() == card); }
+			} else {
+				auto c = dd::container::from_bitmap(words, card);
+				CHECK(c.is_bitmap());
+				CHECK(c.card == card);
+				CHECK(std::equal(c.bitmap.begin(), c.bitmap.end(), words.begin(), words.end()));
+			}
+			if (card > dd::array_max) { continue; }
+
+			auto same = [&](const std::vector<std::uint16_t>& got) { return std::equal(want.begin(), want.end(), got.begin()); };
+			std::vector<std::uint16_t> exact(card);  // no padding: the loop must not write past card
+			dd::extract_loop(words.data(), exact.data());
+			CHECK(same(exact));
+			std::vector<std::uint16_t> padded(card + 2);
+			dd::extract_branchless<false>(words.data(), padded.data());
+			CHECK(same(padded));
+			dd::extract_branchless<true>(words.data(), padded.data());
+			CHECK(same(padded));
+#if DOCSET_BMI
+			if (__builtin_cpu_supports("bmi")) {
+				dd::extract_bmi<false>(words.data(), padded.data());
+				CHECK(same(padded));
+				dd::extract_bmi<true>(words.data(), padded.data());
+				CHECK(same(padded));
+			}
+#endif
+			dd::extract_bits(words.data(), padded.data(), card);
+			CHECK(same(padded));
+		}
+	}
+}
+
+// A bitmap with one member at each of the 65536 positions, and with two, the second 1 to 17 words past the
+// first: a word an extraction form skips or reads short loses members only where the member sits.
+static void conversion_single_members() {
+	dd::buffer<std::uint64_t> words(dd::bitmap_words);
+	std::vector<std::uint16_t> one(1), padded(3), two(2);  // exactly the room each form is owed
+	for (std::uint32_t p = 0; p < 65536; ++p) {
+		std::fill(words.begin(), words.end(), 0);
+		words[p >> 6] = std::uint64_t(1) << (p & 63);
+		dd::extract_loop(words.data(), one.data());
+		CHECK(one[0] == p);
+		dd::extract_branchless<false>(words.data(), padded.data());
+		CHECK(padded[0] == p);
+		dd::extract_branchless<true>(words.data(), padded.data());
+		CHECK(padded[0] == p);
+		dd::extract_bits(words.data(), padded.data(), 1);
+		CHECK(padded[0] == p);
+		words[p >> 6] = 0;
+		const std::uint32_t q = (p + 64 * (1 + p % 17)) & 65535;  // another word, 1 to 17 words on
+		const std::uint32_t lo = std::min(p, q), hi = std::max(p, q);
+		if (lo == hi) { continue; }
+		words[lo >> 6] |= std::uint64_t(1) << (lo & 63);
+		words[hi >> 6] |= std::uint64_t(1) << (hi & 63);
+		dd::extract_loop(words.data(), two.data());
+		CHECK(two[0] == lo && two[1] == hi);
 	}
 }
 
@@ -178,6 +283,8 @@ static void result_boundaries(std::mt19937_64& rng) {
 int main() {
 	std::mt19937_64 rng(2024);
 	extraction(rng);
+	conversion_every_size(rng);
+	conversion_single_members();
 	result_boundaries(rng);
 	for (int iter = 0; iter < 60; ++iter) {
 		std::uint32_t universe = 65536 * (1 + rng() % 6) - (iter % 3 == 0 ? rng() % 60000 : 0);

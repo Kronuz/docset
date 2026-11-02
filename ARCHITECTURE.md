@@ -53,17 +53,31 @@ value into a branch on x86-64 unless the condition is marked unpredictable
 (`__builtin_unpredictable`), so the bound carries that hint, and `docset_codegen`
 compiles it to assembly and looks for the conditional move.
 
-A bitmap result at or below 4096 members converts to an array. A per-bit loop
-(`ctz`, clear the lowest bit) mispredicts its exit about once per word at 0.5 to 3 bits
-per word, which was most of the cost of a sparse AND of two bitmaps. The conversion
-instead takes two bits per word without a branch (the output index advances only where
-a bit was found) up to 1024 members, four per word above that, and loops over any rest.
-It needs a count-trailing-zeros that is cheap for a zero word: arm64 has one, and x86-64
-gets it from BMI1 (`tzcnt`, `blsr`) in a function compiled with a target attribute and
-selected at run time. An x86 CPU without BMI1 keeps the loop, because `bsf` plus a
-conditional move makes the branch-free form slower than the loop. The conversion is out
-of line (`container::fill_array`), so the dense path of `from_bitmap`, a move, stays
-small enough to inline into `intersect` and `subtract`.
+A bitmap result at or below 4096 members converts to an array, by one of two forms picked
+by the result's member count (`pick_extract_form`).
+
+- **The per-bit loop** (`ctz`, clear the lowest bit) for up to `extract_loop_max` members: 96 on
+  x86-64, 80 on arm64. Its exit branch mispredicts about once per word at 0.5 to 3 bits per
+  word, so past the limit it loses to the branch-free form. It writes exactly the members.
+- **Two or four bits per word without a branch** (the output index advances only where a bit
+  was found) up to 1024 members, four per word above that, and a loop over any rest. These
+  write two entries past the last member, so the array is allocated with room for them
+  (`extract_room`). They need a count-trailing-zeros that is cheap for a zero word: arm64 has
+  one, and x86-64 gets it from BMI1 (`tzcnt`, `blsr`) in a function compiled with a target
+  attribute and selected at run time. An x86 CPU without BMI1 keeps the loop, because `bsf`
+  plus a conditional move makes the branch-free form slower than the loop.
+
+The limits are the sizes where the two forms meet end to end (`bench/ab_bench.cc`, AND and
+ANDNOT of two bitmaps with 20 to 400 members in the result). The isolated routine
+(`bench/micro_extract.cc`) finds a smaller crossover on arm64, and so does the end-to-end row
+with more distinct inputs than the benchmark's four (`ab_bench.cc` takes the count as its
+third argument): a predictor memorizes four inputs and makes the loop look cheaper. On arm64
+each form is its own function, aligned to 32 bytes, and a loop result is allocated at exactly
+its members. x86-64 keeps the forms inline and the array padded: where the hot loop starts
+relative to a 64-byte boundary moved a bitmap AND by 20% on an Intel i9 (a result of 20
+members, 61 or 73 us) with the loop unchanged, so any edit of the code ahead of it is a
+change of that row. The conversion is out of line (`container::fill_array`), so the dense path
+of `from_bitmap`, a move, stays small enough to inline into `intersect` and `subtract`.
 
 ## Iterators
 

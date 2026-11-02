@@ -6,6 +6,62 @@ library has no releases.
 
 ## 2026-11-01
 
+### Fixed
+
+- **Bitmap AND and ANDNOT results of 20 to 160 members on arm64 are as fast as before the
+  extraction work.** The final gate read `and bitmaps` at 20, 40 and 80 members 0.955, 0.84
+  and 0.92 of START (`cd38597`) on the M4, and `andnot` at 40 members 0.90. Two causes. The
+  loop limit of 32 members came from `micro_extract`'s isolated crossover (39 to 43 members);
+  end to end, with the 4 inputs of `ab_bench`, the loop wins up to about 90 members, so 33 to 80
+  members took the branch-free form, which costs the same at every size. The limit is now 80.
+  And every conversion allocated `card + 2` entries and shrank them to `card`, which cost 4% of
+  a 20-member row (START's own loop with that resize: 41.6 us, without it 39.5); a result the
+  loop converts is now allocated at exactly its members (`extract_room`), and on arm64 each
+  extraction form is an aligned, non-inlined function. Apple M4 Pro, `bench/ab_bench.cc`
+  (us per 64 chunks, medians of 3 runs, A/A 0.97 to 1.03), START / before / after:
+
+  | bitmaps, members | and | andnot |
+  |---:|---|---|
+  | 20 | 40.5 / 41.0 / 40.0 | 42.4 / 41.1 / 40.0 |
+  | 40 | 43.6 / 51.3 / 43.4 | 46.9 / 51.1 / 43.6 |
+  | 80 | 48.8 / 52.1 / 48.9 | 53.2 / 51.6 / 48.3 |
+  | 160 | 66.1 / 54.2 / 54.0 | 67.6 / 52.7 / 53.8 |
+  | 400 | 130.7 / 57.1 / 57.9 | 135.3 / 56.8 / 57.5 |
+
+  No other row of `ab_bench` is more than 3% slower than the code before (the worst are `andnot`
+  at 160 members, 0.965, the same code in both, and `and d=0.25 x 0.25`, 0.972 with a spread of
+  0.95 to 1.00). The assembly of the committed header is identical to the measured one (arm64,
+  checked with one compiler for both).
+  The new `ab_bench` rows of 240 and 320 members and the optional third argument (the number of
+  inputs the bitmap rows cycle) are in the same table of that run: START 87.0 and 108.5 us,
+  after 54.7 and 56.2.
+
+  The same rows with 24 inputs instead of 4 (`ab_bench 22 "bitmaps, 40 " 24`) showed that a
+  faster loop is not always a faster loop. Skipping groups of 8 empty words in the loop read
+  1.9x faster than START at 20 members and 1.8x at 40 with 4 inputs, and 1.43x at 80; with 24
+  inputs it read 1.46x at 20, 1.0x at 40 and 0.77x at 80 (START 41.4, 47.1 and 59.7 us; grouped
+  28.3, 47.1 and 77.7): the M4's predictor memorizes the 256 chunks of the 4-input rows, and the
+  grouped loop has fewer branches to memorize. It is not in the code. The per-word loop is also
+  slower with 24 inputs (START 59.7 us at 80 members, where the branch-free form takes 52), so
+  the limit of 80 is the largest at which the loop is no slower than START on the benchmark's
+  rows, not the size at which it is fastest.
+
+- **x86-64 is unchanged, and the i9 rows of the gate are a code-layout effect.** The gate read
+  `and bitmaps` at 20 members 0.82 and at 40 members 0.93 of START on the i9, with the same
+  loop. Moving the whole benchmark by 0 to 60 bytes of padding (16 builds of START) moves the
+  `and` row between 60.4 and 73.0 us and the `andnot` row likewise at other offsets: a row is
+  slow exactly when the outer loop of the extraction (a 22-byte body that runs 1024 times per
+  chunk) starts at 48 modulo 64 and so straddles a 64-byte line (32 of 32 observations: `and`
+  and `andnot` at 16 positions each). With this commit's benchmark the unchanged x86-64 code
+  sits at 16 or 0 modulo 64 and reads START 1.02 (`and`) and 1.00 (`andnot`) at 20 members, 1.00
+  and 0.99 at 40, 1.03 and 1.01 at 80 (`and`: 62.3 us START, 61.5 now at 20; 74.7 and 74.4 at
+  40; 101.4 and 98.6 at 80). A function aligned to 32 bytes for the loop put it at 48 modulo 64
+  and read 0.82 to 0.84 at 20 members, 0.86 to 0.88 at 40 and 0.95 at 80, and `iterate d=0.1`,
+  which no code of this change touches, 0.92. So the x86-64 code keeps what was measured (its
+  assembly is identical to the code before), and a build of the repository can still land in the
+  slow position. The prototype that places the loop on purpose (functions aligned to 64 bytes)
+  is on branch `perf/docset-x86-align64`; it is not timed.
+
 ### Changed
 
 - **Small bitmap results take the plain loop.** A bitmap AND or ANDNOT whose result has

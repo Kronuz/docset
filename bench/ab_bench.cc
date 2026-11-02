@@ -2,7 +2,10 @@
 // reference test/docset_old.hh. Code layout and inlining decisions differ between a shared
 // binary and a separate one, so rows that move only with layout show up here and not in
 // docset_cmp_bench. Prints "row ns" lines (best of 15 windows of 20 ms); tools compare the
-// two binaries by alternating runs. Usage: docset_ab_new [universe_bits (default 22)]
+// two binaries by alternating runs. Usage: docset_ab_new [universe_bits (default 22) [row filter [copies]]]
+// The filter is a substring: only the rows whose name contains it are timed. The bitmap rows cycle
+// through `copies` inputs (default 4, 256 chunks): a branch predictor that memorizes 4 inputs
+// cannot memorize 64, so a row that moves with `copies` measures the predictor and not the code.
 #ifdef DOCSET_AB_OLD
 #include "docset_old.hh"
 namespace ds = docset_old;
@@ -15,6 +18,7 @@ namespace ds = docset;
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -46,10 +50,14 @@ static std::vector<std::uint32_t> bernoulli(std::mt19937_64& rng, std::uint32_t 
 }
 
 static void report(const char* name, double ns) { std::printf("%-44s %12.1f\n", name, ns); }
+static const char* only = nullptr;  // row filter (argv[2])
+static bool want(const char* name) { return !only || std::strstr(name, only); }
 
 int main(int argc, char** argv) {
 	const unsigned bits = argc > 1 ? unsigned(std::atoi(argv[1])) : 22;
 	const std::uint32_t universe = 1u << bits;
+	only = argc > 2 ? argv[2] : nullptr;
+	const std::size_t copies = argc > 3 ? std::size_t(std::atoi(argv[3])) : 4;
 	std::mt19937_64 rng(11);
 	char name[96];
 
@@ -69,22 +77,28 @@ int main(int argc, char** argv) {
 		std::size_t turn = 0;
 		auto next = [&]() -> const input& { return inputs[turn++ % inputs.size()]; };
 		std::snprintf(name, sizeof name, "and    d=%g x %g", p[0], p[1]);
-		report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a & in.b).count(); }));
+		if (want(name)) { report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a & in.b).count(); })); }
 		std::snprintf(name, sizeof name, "or     d=%g x %g", p[0], p[1]);
-		report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a | in.b).count(); }));
+		if (want(name)) { report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a | in.b).count(); })); }
 		std::snprintf(name, sizeof name, "andnot d=%g x %g", p[0], p[1]);
-		report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a - in.b).count(); }));
+		if (want(name)) { report(name, best_ns([&] { const input& in = next(); sink = sink + (in.a - in.b).count(); })); }
 	}
 
 	// Bitmap operands whose result has few members per chunk (a filter that keeps or drops a handful
 	// of documents). Per chunk, S is the n result members and R1, R2 two disjoint sets of 4500: the
 	// AND takes A = S + R1 with B = S + R2, the ANDNOT A = S + R1 with B = R1 + R2 (A - B = S).
 	// The result is a bitmap converted to an array, so these rows time the extraction.
-	for (std::uint32_t n : {20, 40, 80, 160, 400}) {
+	for (std::uint32_t n : {20, 40, 80, 160, 240, 320, 400}) {
+		{
+			char and_row[96], andnot_row[96];
+			std::snprintf(and_row, sizeof and_row, "and    bitmaps, %u members per chunk", n);
+			std::snprintf(andnot_row, sizeof andnot_row, "andnot bitmaps, %u members per chunk", n);
+			if (!want(and_row) && !want(andnot_row)) { continue; }  // no inputs for rows that are not timed
+		}
 		struct pair_in { ds::set a, b, c; };  // c is B for the ANDNOT
 		std::vector<pair_in> inputs;
 		std::vector<std::uint32_t> order(65536);
-		for (std::size_t copy = 0; copy < 4; ++copy) {
+		for (std::size_t copy = 0; copy < copies; ++copy) {
 			std::vector<std::uint32_t> a, b, c;
 			for (std::uint32_t chunk = 0; chunk < universe >> 16; ++chunk) {
 				std::iota(order.begin(), order.end(), chunk << 16);
@@ -106,9 +120,9 @@ int main(int argc, char** argv) {
 		std::size_t turn = 0;
 		auto next = [&]() -> const pair_in& { return inputs[turn++ % inputs.size()]; };
 		std::snprintf(name, sizeof name, "and    bitmaps, %u members per chunk", n);
-		report(name, best_ns([&] { const pair_in& in = next(); sink = sink + (in.a & in.b).count(); }));
+		if (want(name)) { report(name, best_ns([&] { const pair_in& in = next(); sink = sink + (in.a & in.b).count(); })); }
 		std::snprintf(name, sizeof name, "andnot bitmaps, %u members per chunk", n);
-		report(name, best_ns([&] { const pair_in& in = next(); sink = sink + (in.a - in.c).count(); }));
+		if (want(name)) { report(name, best_ns([&] { const pair_in& in = next(); sink = sink + (in.a - in.c).count(); })); }
 	}
 
 	// Iteration over one set.
@@ -116,7 +130,7 @@ int main(int argc, char** argv) {
 		const auto v = bernoulli(rng, universe, density);
 		const auto a = ds::set::from_sorted(universe, v);
 		std::snprintf(name, sizeof name, "iterate d=%g", density);
-		report(name, best_ns([&] { std::uint64_t s = 0; a.for_each([&](std::uint32_t d) { s += d; }); sink = sink + s; }));
+		if (want(name)) { report(name, best_ns([&] { std::uint64_t s = 0; a.for_each([&](std::uint32_t d) { s += d; }); sink = sink + s; })); }
 	}
 
 	// Point test(): ns per probe over 4096 random probes, half of them members when there are any.
@@ -126,6 +140,7 @@ int main(int argc, char** argv) {
 		for (std::size_t i = 0; i < probes.size(); ++i) {
 			probes[i] = (i % 2 && !v.empty()) ? v[rng() % v.size()] : std::uint32_t(rng() % (std::uint64_t(u) + 1));
 		}
+		if (!want(label)) { return; }
 		report(label, best_ns([&] { std::uint64_t s = 0; for (auto p : probes) { s += a.test(p); } sink = sink + s; }) / 4096);
 	};
 	for (double density : {1e-3, 1e-2, 0.03, 0.1, 0.5}) {

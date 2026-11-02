@@ -851,12 +851,24 @@ inline std::uint32_t combine_words(const std::uint64_t* x, const std::uint64_t* 
 
 // ---- bitmap to array --------------------------------------------------------------------
 
-// Each routine writes the sorted positions of the set bits of one chunk bitmap to out. The
-// branch-free forms store blindly past the last position, so out has room for card + 2 entries.
+// Each routine writes the sorted positions of the set bits of one chunk bitmap to out. The loop
+// writes exactly the members; the branch-free forms store blindly past the last position, so out
+// has room for card + 2 entries (extract_room).
 
-// One loop iteration per set bit: the exit branch of the inner loop is taken about once per
+// On arm64 each extraction routine is its own function, aligned to 32 bytes, so where its hot
+// loop starts does not depend on the size of everything compiled before it. x86-64 keeps the
+// routines inline as they were: the i9's loop speed moved by 20% (a result of 20 members: 61 or
+// 73 us) with where the loop starts relative to a 64-byte boundary, and a change of the code
+// ahead of it, or an aligned function that put it at 48 modulo 64, flipped it (CHANGELOG).
+#if (defined(__aarch64__) || defined(_M_ARM64)) && (defined(__GNUC__) || defined(__clang__))
+#define DOCSET_EXTRACT_FN __attribute__((noinline, aligned(32)))
+#else
+#define DOCSET_EXTRACT_FN
+#endif
+
+// One loop iteration per set bit. The exit branch of the inner loop is taken about once per
 // word, and mispredicts when the bits per word vary (a result near 1 bit per word).
-inline void extract_loop(const std::uint64_t* words, std::uint16_t* out) noexcept {
+DOCSET_EXTRACT_FN inline void extract_loop(const std::uint64_t* words, std::uint16_t* out) noexcept {
 	std::size_t k = 0;
 	for (std::size_t i = 0; i < bitmap_words; ++i) {
 		for (std::uint64_t w = words[i]; w; w &= w - 1) { out[k++] = std::uint16_t(i * 64 + unsigned(std::countr_zero(w))); }
@@ -866,7 +878,7 @@ inline void extract_loop(const std::uint64_t* words, std::uint16_t* out) noexcep
 // Two or four bits per word without a branch (the output index advances only on a set bit), then
 // a loop for any rest. Fast where count-trailing-zeros of zero costs nothing extra (arm64).
 template <bool Four>
-inline void extract_branchless(const std::uint64_t* words, std::uint16_t* out) noexcept {
+DOCSET_EXTRACT_FN inline void extract_branchless(const std::uint64_t* words, std::uint16_t* out) noexcept {
 	std::size_t k = 0;
 	for (std::size_t i = 0; i < bitmap_words; ++i) {
 		std::uint64_t w = words[i];
@@ -898,7 +910,7 @@ inline constexpr std::uint32_t extract_two_max = bitmap_words;
 // word compiles to bsf and a conditional move, which makes the branch-free form slower than the
 // loop; tzcnt returns 64 for zero by itself and blsr clears the lowest bit in one instruction.
 template <bool Four>
-__attribute__((target("bmi"))) inline void extract_bmi(const std::uint64_t* words, std::uint16_t* out) noexcept {
+__attribute__((target("bmi"))) DOCSET_EXTRACT_FN inline void extract_bmi(const std::uint64_t* words, std::uint16_t* out) noexcept {
 	std::size_t k = 0;
 	for (std::size_t i = 0; i < bitmap_words; ++i) {
 		std::uint64_t w = words[i];
@@ -930,18 +942,32 @@ constexpr extract_form pick_extract_form(std::uint32_t card, std::uint32_t loop_
 	return card <= loop_max ? extract_form::loop : card <= extract_two_max ? extract_form::two : extract_form::four;
 }
 
-// The branch-free forms cost the same for any result (stores for every word); the loop costs
-// 5 to 9 ns per member (one mispredicted exit per word), so it wins up to the size where the
-// two meet (bench/micro_extract.cc): 39 to 43 members on an Apple M4 Pro (Apple clang 17, gcc
-// 16, LLVM 23), 99 (gcc 16) to 135 (LLVM 23) on an Intel i9-9980HK, 195 (gcc 11) on an AMD
-// EPYC 7763. The limit is the lowest crossover rounded down to a multiple of 16, so on none
-// of them does it pick the slower form. Other targets take the loop for an empty result only.
+// The branch-free forms cost the same for any result (stores for every word); the loop costs a
+// floor plus a few ns per member (a mispredicted exit per word), so it wins up to the size where
+// the two meet. The limit is set from the end-to-end rows of bench/ab_bench.cc (AND and ANDNOT
+// of two bitmaps with N members in the result): the largest size at which the loop is no slower
+// than it was before the branch-free forms. The isolated routine (bench/micro_extract.cc) puts
+// the crossover lower on arm64 (39 to 43 members on an Apple M4 Pro); end to end the bench
+// cycles 4 inputs, which the branch predictor partly memorizes, and the loop wins up to about
+// 90 members there, but with 24 inputs it loses from about 55. On an Intel i9-9980HK the loop
+// wins at 80 members and loses at 160. Other targets take the loop for an empty result only.
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 inline constexpr std::uint32_t extract_loop_max = 96;
 #elif defined(__aarch64__) || defined(_M_ARM64)
-inline constexpr std::uint32_t extract_loop_max = 32;
+inline constexpr std::uint32_t extract_loop_max = 80;
 #else
 inline constexpr std::uint32_t extract_loop_max = 0;
+#endif
+
+// Entries of room extract_bits needs for a result of card members. The loop writes the members
+// and nothing else; a branch-free form writes two entries past the last. x86-64 takes the two
+// for every size, as it did before the loop limit (it keeps its measured code, see above).
+#if defined(__aarch64__) || defined(_M_ARM64)
+constexpr std::uint32_t extract_room(std::uint32_t card) noexcept {
+	return pick_extract_form(card, extract_loop_max) == extract_form::loop ? card : card + 2;
+}
+#else
+constexpr std::size_t extract_room(std::uint32_t card) noexcept { return std::size_t(card) + 2; }
 #endif
 
 // card is the number of set bits. x86 without BMI1 keeps the loop; everything else takes the
@@ -1015,9 +1041,9 @@ struct container {
 		return c;
 	}
 
-	// Padding keeps the blind writes of the branch-free extraction in bounds.
+	// The room past the last member keeps the blind writes of the branch-free extraction in bounds.
 	__attribute__((noinline)) void fill_array(const buffer<std::uint64_t>& words) {
-		array.resize(std::size_t(card) + 2);
+		array.resize(extract_room(card));
 		extract_bits(words.data(), array.data(), card);
 		array.resize(card);
 	}

@@ -22,9 +22,9 @@ filter caches, live-docs masks and set algebra over document ids.
   SSE4.2 (SSSE3 without it) or NEON, union a vectorized merge (SSE4.1 or NEON), and
   bitmap operations fuse with popcount, on AVX2 where the CPU has it.
 - **Extraction by CPU and result size.** A bitmap result with at most 4,096 members
-  becomes an array: a plain loop up to 96 members on x86-64 and 32 on arm64, and
-  above that two or four bits per word without a branch (on x86-64 with BMI1, and
-  the loop when the CPU lacks it).
+  becomes an array: a plain loop up to 96 members on x86-64 and 80 on arm64, and above
+  that two or four bits per word without a branch (on x86-64 with BMI1, and the loop when
+  the CPU lacks it).
 - **`docset::sorted_set`.** Strictly increasing 32-bit ids, with SIMD intersection
   and galloping search for lopsided sizes.
 - **`docset::bitset`.** One bit per id, for live-docs masks and dense filters, with

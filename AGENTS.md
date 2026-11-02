@@ -20,11 +20,17 @@ docs/perf/README.md  The CRoaring comparison and the extraction variants on the 
 - Containers hold at most 4096 array members; bitmaps hold more. Empty containers are never stored.
 - `count()` is maintained by every operation; never recompute it lazily.
 - SIMD kernels need 8 elements of slack in their output buffers.
-- The branch-free bitmap-to-array extraction (`extract_bits`) stores blindly past the last
-  position, so `container::fill_array` sizes the array to card + 2 before it runs. Results
-  of up to `extract_loop_max` members (96 on x86-64, 32 on arm64) take the plain loop,
-  which costs less than the branch-free form's fixed cost per word. x86 uses BMI1 behind a
-  run-time check; without it the loop is faster than the branch-free form.
+- The bitmap-to-array extraction (`extract_bits`) has the per-bit loop for results of up to
+  `extract_loop_max` members (96 on x86-64, 80 on arm64) and branch-free forms above. The loop
+  writes exactly the members; the branch-free forms store blindly past the last position, so
+  `container::fill_array` sizes the array with `extract_room(card)` (card or card + 2 on arm64,
+  card + 2 on x86-64). On arm64 each form is a `DOCSET_EXTRACT_FN` (noinline, aligned to 32
+  bytes). On x86-64 the forms stay inline: the i9's `and` of a 20-member result ran 61 or 73 us
+  with the code unchanged, depending on whether the hot loop starts at 48 modulo 64, and a change
+  to this path is a change of that row; time it on the i9 (`ab_bench`, in one hold) before
+  editing it. The limits are measured end to end (`bench/ab_bench.cc`, also with more inputs:
+  `ab_bench 22 "bitmaps, 40 " 24`), and `test/diff.cc` pins them. x86 uses BMI1 behind a run-time
+  check; without it the loop is faster than the branch-free form.
 - Never pass an empty vector's `data()` to `memcpy`; use `detail::copy_bytes`.
 - `lower_bound_index` marks its select unpredictable (`DOCSET_UNPREDICTABLE`): LLVM compiles a select on a loaded
   value to a branch on x86-64 otherwise. `docset_codegen` checks the assembly.
