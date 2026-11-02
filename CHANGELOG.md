@@ -50,7 +50,7 @@ library has no releases.
   `and bitmaps` at 20 members 0.82 and at 40 members 0.93 of START on the i9, with the same
   loop. Moving the whole benchmark by 0 to 60 bytes of padding (16 builds of START) moves the
   `and` row between 60.4 and 73.0 us and the `andnot` row likewise at other offsets: a row is
-  slow exactly when the outer loop of the extraction (a 22-byte body that runs 1024 times per
+  slow exactly when the outer loop of the extraction (a 21-byte body that runs 1024 times per
   chunk) starts at 48 modulo 64 and so straddles a 64-byte line (32 of 32 observations: `and`
   and `andnot` at 16 positions each). With this commit's benchmark the unchanged x86-64 code
   sits at 16 or 0 modulo 64 and reads START 1.02 (`and`) and 1.00 (`andnot`) at 20 members, 1.00
